@@ -1,0 +1,32 @@
+coverage_flag: sparse
+differential_diseases: []
+disease_category: ''
+disease_id: MONDO:15920
+disease_name: syndromic neurometabolic disease with X-linked intellectual disability
+disease_type: ''
+expected_yield: low
+genereviews_id: null
+has_genereviews: false
+has_omim: false
+has_orphanet: false
+inheritance_pattern: ''
+key_genes: []
+key_phenotypes: []
+mondo_id: MONDO:15920
+omim_id: null
+orphanet_id: null
+pmc_oa_count: 3
+primekg_neighbor_count: 0
+primekg_node_id: null
+pubmed_article_count: 33
+recommended_pubmed_queries:
+- '"syndromic neurometabolic disease with X-linked intellectual disability" AND (treatment
+  OR therapy OR management)'
+- '"syndromic neurometabolic disease with X-linked intellectual disability" AND (pathogenesis
+  OR mechanism OR genetics)'
+- '"syndromic neurometabolic disease with X-linked intellectual disability" AND (diagnosis
+  OR biomarker OR prognosis)'
+- '"syndromic neurometabolic disease with X-linked intellectual disability" AND (natural
+  history OR progression OR outcome)'
+synonyms: []
+tier1_sources: []

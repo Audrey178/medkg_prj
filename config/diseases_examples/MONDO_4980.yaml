@@ -1,0 +1,28 @@
+coverage_flag: moderate
+differential_diseases: []
+disease_category: ''
+disease_id: MONDO:4980
+disease_name: atopic eczema
+disease_type: ''
+expected_yield: medium
+genereviews_id: null
+has_genereviews: false
+has_omim: false
+has_orphanet: false
+inheritance_pattern: ''
+key_genes: []
+key_phenotypes: []
+mondo_id: MONDO:4980
+omim_id: null
+orphanet_id: null
+pmc_oa_count: 413
+primekg_neighbor_count: 0
+primekg_node_id: null
+pubmed_article_count: 3443
+recommended_pubmed_queries:
+- '"atopic eczema" AND (treatment OR therapy OR management)'
+- '"atopic eczema" AND (pathogenesis OR mechanism OR genetics)'
+- '"atopic eczema" AND (diagnosis OR biomarker OR prognosis)'
+- '"atopic eczema" AND (natural history OR progression OR outcome)'
+synonyms: []
+tier1_sources: []

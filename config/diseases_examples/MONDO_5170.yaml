@@ -1,0 +1,28 @@
+coverage_flag: sparse
+differential_diseases: []
+disease_category: ''
+disease_id: MONDO:5170
+disease_name: MONDO:5170
+disease_type: ''
+expected_yield: low
+genereviews_id: null
+has_genereviews: false
+has_omim: false
+has_orphanet: false
+inheritance_pattern: ''
+key_genes: []
+key_phenotypes: []
+mondo_id: MONDO:5170
+omim_id: null
+orphanet_id: null
+pmc_oa_count: 0
+primekg_neighbor_count: 0
+primekg_node_id: null
+pubmed_article_count: 0
+recommended_pubmed_queries:
+- '"MONDO:5170" AND (treatment OR therapy OR management)'
+- '"MONDO:5170" AND (pathogenesis OR mechanism OR genetics)'
+- '"MONDO:5170" AND (diagnosis OR biomarker OR prognosis)'
+- '"MONDO:5170" AND (natural history OR progression OR outcome)'
+synonyms: []
+tier1_sources: []

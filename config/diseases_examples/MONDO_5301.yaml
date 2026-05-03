@@ -1,0 +1,28 @@
+coverage_flag: moderate
+differential_diseases: []
+disease_category: ''
+disease_id: MONDO:5301
+disease_name: multiple sclerosis
+disease_type: ''
+expected_yield: medium
+genereviews_id: null
+has_genereviews: false
+has_omim: false
+has_orphanet: false
+inheritance_pattern: ''
+key_genes: []
+key_phenotypes: []
+mondo_id: MONDO:5301
+omim_id: null
+orphanet_id: null
+pmc_oa_count: 14116
+primekg_neighbor_count: 0
+primekg_node_id: null
+pubmed_article_count: 117638
+recommended_pubmed_queries:
+- '"multiple sclerosis" AND (treatment OR therapy OR management)'
+- '"multiple sclerosis" AND (pathogenesis OR mechanism OR genetics)'
+- '"multiple sclerosis" AND (diagnosis OR biomarker OR prognosis)'
+- '"multiple sclerosis" AND (natural history OR progression OR outcome)'
+synonyms: []
+tier1_sources: []

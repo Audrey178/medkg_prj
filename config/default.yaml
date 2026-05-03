@@ -1,0 +1,88 @@
+# PrimeKG-T Global Configuration
+# All agents read from this + per-disease YAML overrides
+
+pipeline:
+  version: "1.0.0"
+  batch_size: 10
+  max_retries: 3
+  retry_delay_seconds: 5
+
+# LLM backends for multi-model consensus
+llm:
+  models:
+    - name: "gpt-4o-mini"
+      provider: "openai"
+      temperature: 0.1
+      max_tokens: 4096
+    - name: "claude-sonnet-4-20250514"
+      provider: "anthropic"
+      temperature: 0.1
+      max_tokens: 4096
+    - name: "gemini-1.5-flash"
+      provider: "google"
+      temperature: 0.1
+      max_tokens: 4096
+  consensus_threshold: 2  # minimum models that must agree
+
+# Evidence harvesting
+harvesting:
+  pubmed:
+    max_abstracts_per_disease: 2000
+    min_year: 2000
+    max_year: 2026
+    rate_limit_per_second: 10  # with API key
+  pmc:
+    fetch_fulltext: true
+    max_fulltext_per_disease: 500
+    focus_sections:
+      - "results"
+      - "discussion"
+  tier1:
+    genereviews: true
+    omim: true
+    orphanet: true
+    guidelines: true
+
+# Entity normalization
+normalization:
+  sapbert:
+    model_name: "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
+    similarity_threshold: 0.85
+  scispacy:
+    model: "en_core_sci_lg"
+    umls_threshold: 0.85
+  primekg_lookup: true  # check PrimeKG nodes first
+
+# Credibility scoring weights (six-signal system)
+credibility:
+  weights:
+    journal_tier: 0.15
+    citation_velocity: 0.15
+    study_type: 0.25
+    replication_status: 0.15
+    retraction_status: 0.15
+    llm_consensus: 0.15
+
+# Extraction limits
+extraction:
+  max_docs_per_disease: 200  # was 100, increased for higher triple yield
+  max_text_chars: 6000       # per-document text truncation for LLM context
+
+# Quality thresholds
+quality:
+  min_consensus_confidence: 0.67  # at least 2/3 models agree
+  min_credibility_score: 0.3
+  min_triples_per_disease: 5
+  max_triples_per_document: 50  # outlier detection
+
+# Neo4j
+neo4j:
+  database_prefix: "primekgt"  # databases named primekgt_{category}
+
+# Output
+output:
+  formats:
+    - csv
+    - json
+    - neo4j_cypher
+  export_dir: "data/temporal_atlas"

@@ -1,0 +1,24 @@
+ChronoMedKG — Notices and Attributions
+=========================================
+
+This repository contains two distinct artifact categories under two licenses:
+
+  1. Source code (Python pipeline, agents, benchmark scripts, evaluation
+     harness) is licensed under the MIT License.  See LICENSE-CODE.
+
+  2. Released data artifacts (ChronoMedKG triples, ChronoMedKG-TQA
+     benchmark, supplementary JSON/CSV files in data/primekg_t/ and
+     data/benchmark/) are licensed under CC BY 4.0.  See LICENSE-DATA.
+
+Third-party components used during construction (not redistributed here):
+  - OpenAI GPT-4o-mini           (OpenAI API, commercial terms)
+  - Anthropic Claude Haiku 4.5   (Anthropic API, commercial terms)
+  - Google Gemini Flash          (Google AI Studio terms)
+  - DeepSeek V3                  (DeepSeek API terms)
+
+These API services are used only during KG construction. No API-provider
+content is redistributed; only the extracted triples (ChronoMedKG's
+derivative output) are released.
+
+Upstream data sources (see LICENSE-DATA for individual license terms):
+  - PrimeKG, Orphadata, HPOA, GA4GH Phenopackets, PubMed/PMC.

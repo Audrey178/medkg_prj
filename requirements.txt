@@ -1,0 +1,43 @@
+# ============================================================================
+# ChronoMedKG — pinned reproducibility environment
+# Tested on macOS 15 (Darwin 24.6) + Apple Silicon, Python 3.12.
+# Anaconda3 system Python; no venv for the core pipeline.
+# SapBERT canonicalisation is run from a separate venv (.venv-sapbert)
+# symlinked from the HEG-TKG project; see docs/ENVIRONMENT.md.
+# ============================================================================
+
+# --- Core data / config ---
+pandas==2.2.2
+numpy==1.26.4
+pyyaml==6.0.1
+python-dotenv==1.1.0
+tqdm==4.67.1
+
+# --- LLM clients ---
+openai==2.9.0
+anthropic==0.75.0
+google-generativeai==0.8.6   # deprecated but still load-bearing; v1.1 migrates to google.genai
+
+# --- Biomedical ingest ---
+biopython==1.84              # NCBI E-utilities client
+requests==2.32.3
+aiohttp==3.10.11
+tenacity==9.0.0
+rapidfuzz==3.14.3            # consensus fuzzy entity match
+
+# --- KG storage ---
+neo4j==5.28.0                # optional; Cypher-based downstream analytics
+
+# --- ML + eval ---
+torch==2.7.0                 # link-prediction embeddings (TransE)
+scikit-learn==1.8.0          # clustering (§6.3), LR calibration
+hdbscan==0.8.40              # §6.3 density-based sensitivity
+scipy==1.14.1                # statistical tests (Welch's t, McNemar)
+
+# --- Text evaluation (TQA scorer calibration) ---
+rouge-score==0.1.2
+bert-score==0.3.13
+
+# --- Release tooling ---
+huggingface_hub==0.26.5      # HF dataset upload
+jsonschema==4.23.0           # Croissant validation

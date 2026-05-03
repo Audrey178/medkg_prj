@@ -1,0 +1,28 @@
+coverage_flag: sparse
+differential_diseases: []
+disease_category: ''
+disease_id: MONDO:3853
+disease_name: Bartholin gland adenocarcinoma
+disease_type: ''
+expected_yield: low
+genereviews_id: null
+has_genereviews: false
+has_omim: false
+has_orphanet: false
+inheritance_pattern: ''
+key_genes: []
+key_phenotypes: []
+mondo_id: MONDO:3853
+omim_id: null
+orphanet_id: null
+pmc_oa_count: 0
+primekg_neighbor_count: 0
+primekg_node_id: null
+pubmed_article_count: 7
+recommended_pubmed_queries:
+- '"Bartholin gland adenocarcinoma" AND (treatment OR therapy OR management)'
+- '"Bartholin gland adenocarcinoma" AND (pathogenesis OR mechanism OR genetics)'
+- '"Bartholin gland adenocarcinoma" AND (diagnosis OR biomarker OR prognosis)'
+- '"Bartholin gland adenocarcinoma" AND (natural history OR progression OR outcome)'
+synonyms: []
+tier1_sources: []

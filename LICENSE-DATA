@@ -1,0 +1,83 @@
+ChronoMedKG Resource Data License
+====================================
+
+The ChronoMedKG knowledge graph, the ChronoMedKG-TQA benchmark, and all
+derived data artifacts in this repository are released under the Creative
+Commons Attribution 4.0 International License (CC BY 4.0).
+
+Full license text: https://creativecommons.org/licenses/by/4.0/legalcode
+
+Summary of permissions (non-binding; defer to full text above):
+
+  You are free to:
+    - Share   — copy and redistribute the material in any medium or format
+    - Adapt   — remix, transform, and build upon the material
+                for any purpose, even commercially.
+
+  Under the following terms:
+    - Attribution — You must give appropriate credit, provide a link to the
+                    license, and indicate if changes were made. You may do so
+                    in any reasonable manner, but not in any way that suggests
+                    the licensor endorses you or your use.
+    - No additional restrictions — You may not apply legal terms or
+                    technological measures that legally restrict others from
+                    doing anything the license permits.
+
+Citation
+--------
+
+If you use ChronoMedKG or ChronoMedKG-TQA in your work, please cite:
+
+  Ahmed, M. S. et al. (2026). ChronoMedKG: A Temporally-Grounded,
+  Evidence-Graded Biomedical Knowledge Graph and Benchmark for Temporal
+  Clinical Reasoning. NeurIPS Datasets & Benchmarks 2026.
+
+Upstream sources and their licenses
+-----------------------------------
+
+ChronoMedKG is derived from and aligns with several upstream resources.
+Users must comply with the licenses of any upstream data they redistribute:
+
+  - PrimeKG (Chandak et al., 2023):
+      License: MIT (code); CC BY 4.0 (data release on Harvard Dataverse)
+      URL:     https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/IXA7BM
+
+  - PubMed / PMC abstracts and full text (NLM/NCBI):
+      License: Subject to NLM terms; PMC Open Access Subset is freely reusable
+               with attribution.
+      URL:     https://www.ncbi.nlm.nih.gov/pmc/tools/openftlist/
+
+  - Orphadata (Orphanet):
+      License: CC BY 4.0 (Orphadata release terms, accessed 2026).
+      URL:     https://www.orphadata.com/
+
+  - HPOA / Human Phenotype Ontology annotations:
+      License: HPO permissive license (free reuse with attribution).
+      URL:     https://hpo.jax.org/license
+
+  - GA4GH Phenopackets (benchmark subset only):
+      License: CC BY 4.0.
+      URL:     https://github.com/phenopackets
+
+Only derivative annotations produced by the ChronoMedKG pipeline are
+released here under CC BY 4.0. Re-distribution of upstream corpora must
+respect the licenses above.
+
+No patient-level data
+---------------------
+
+ChronoMedKG contains no patient-level data. All onset-age information is
+literature-level (aggregated clinical descriptions from PubMed/PMC articles,
+Orphadata disease epidemiology, or HPOA disease-level annotations). No
+de-identified electronic health records, imaging, or other protected health
+information is included.
+
+Clinician rating data (Section 4.3 of the paper) was collected from
+consenting physicians and contains no patient information; it is reported
+in anonymised aggregate form only.
+
+Contact
+-------
+
+Issues and questions: https://github.com/[ORG]/temporal-atlas/issues
+Contact: theshamimahmed [at] gmail [dot] com
