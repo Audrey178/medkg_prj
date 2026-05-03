@@ -45,29 +45,14 @@ ChronoTQA benchmark (`tqa_benchmark.json`, 3.2 MB) sits at the same record. The 
 
 ## Pipeline architecture
 
-```
-                                ┌──────────────────────┐
-                                │     Orchestrator     │
-                                │  (workers, retry,    │
-                                │   resume, batching)  │
-                                └─────────┬────────────┘
-                                          │
-        ┌─────────────────┬───────────────┼───────────────┬─────────────────┐
-        ▼                 ▼               ▼               ▼                 ▼
-  ┌───────────┐    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
-  │ Agent 1   │ →  │  Agent 2     │→ │  Agent 3     │→ │  Agent 4     │
-  │ Disease   │    │  Evidence    │  │  Knowledge   │  │  Quality     │
-  │ Profiler  │    │  Harvester   │  │  Extractor   │  │  Controller  │
-  └───────────┘    └──────────────┘  └──────────────┘  └──────────────┘
-   MONDO/OMIM/      PubMed +          DeepSeek V3 +    PrimeKG align +
-   Orphanet         PMC OA            GPT-4o-mini +    credibility +
-   profiling        retrieval         Claude Haiku     temporal checks
-                                      consensus
-        │                 │               │               │
-        ▼                 ▼               ▼               ▼
-   per-disease       raw text +       candidate         validated
-   YAML profile      metadata          triples           triples
-```
+![ChronoMedKG four-agent pipeline](docs/figures/pipeline.png)
+
+The orchestrator drives four agents end-to-end from a disease identifier:
+
+1. **Disease Profiler** queries MONDO / OMIM / Orphanet for ontology-grounded metadata and a literature-coverage tier (Standard ≥100 articles, Light 20–99, Minimal <20).
+2. **Evidence Harvester** retrieves PubMed abstracts and PMC Open Access full-text via NCBI E-utilities; up to 150 documents for Standard-tier diseases, all available literature for sparse-literature rare diseases.
+3. **Knowledge Extractor** runs three frontier LLMs in parallel (DeepSeek V3, GPT-4o-mini, Claude 3 Haiku); a candidate triple is retained only if at least two models extract it from the same document with entity fuzzy match ≥80% and the same canonical relation.
+4. **Quality Controller** aligns to PrimeKG schema, scores six-signal credibility, applies temporal-plausibility checks, and emits the validated subgraph.
 
 ## Repository layout
 
