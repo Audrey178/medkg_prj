@@ -1,0 +1,59 @@
+cff-version: 1.2.0
+title: "ChronoMedKG: A Temporally-Grounded, Evidence-Graded Biomedical Knowledge Graph and Benchmark for Temporal Clinical Reasoning"
+message: "If you use ChronoMedKG, ChronoTQA, or this pipeline, please cite the paper and the dataset (Zenodo DOI)."
+type: software
+version: 0.0.1
+date-released: 2026-04-22
+license: MIT
+repository-code: "https://gitlab.sdu.dk/screen4care/chronomedkg"
+url: "https://zenodo.org/records/19697543"
+authors:
+  - family-names: Ahmed
+    given-names: Md Shamim
+    email: shamim@imada.sdu.dk
+    affiliation: University of Southern Denmark
+  - family-names: Firoozbakht
+    given-names: Farzaneh
+    affiliation: University of Hamburg
+  - family-names: Galke Poech
+    given-names: Lukas
+    affiliation: University of Southern Denmark
+  - family-names: Baumbach
+    given-names: Jan
+    affiliation: University of Hamburg
+  - family-names: Röttger
+    given-names: Richard
+    affiliation: University of Southern Denmark
+identifiers:
+  - type: doi
+    value: 10.5281/zenodo.19697542
+    description: Zenodo concept DOI (always resolves to the latest version)
+  - type: doi
+    value: 10.5281/zenodo.19697543
+    description: Zenodo version DOI (v0.0.1, the bytes reviewed for the NeurIPS submission)
+preferred-citation:
+  type: conference-paper
+  title: "ChronoMedKG: A Temporally-Grounded, Evidence-Graded Biomedical Knowledge Graph and Benchmark for Temporal Clinical Reasoning"
+  year: 2026
+  authors:
+    - family-names: Ahmed
+      given-names: Md Shamim
+    - family-names: Firoozbakht
+      given-names: Farzaneh
+    - family-names: Galke Poech
+      given-names: Lukas
+    - family-names: Baumbach
+      given-names: Jan
+    - family-names: Röttger
+      given-names: Richard
+  collection-title: "Advances in Neural Information Processing Systems, Evaluations and Datasets Track"
+keywords:
+  - biomedical knowledge graph
+  - temporal reasoning
+  - rare diseases
+  - benchmark
+  - agentic pipeline
+  - LLM extraction
+  - PrimeKG
+  - ChronoMedKG
+  - ChronoTQA

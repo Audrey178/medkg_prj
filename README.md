@@ -22,6 +22,53 @@ This repository contains the **construction pipeline and experiment scripts** fo
 
 ChronoMedKG ships paired with **ChronoTQA**, the first temporal biomedical QA benchmark (3,341 questions across eight reported task types).
 
+## Quickstart
+
+Download the validated triples from Zenodo and inspect a few records:
+
+```python
+import json, urllib.request
+
+url = "https://zenodo.org/records/19697543/files/validated_triples.jsonl"
+urllib.request.urlretrieve(url, "validated_triples.jsonl")  # 527 MB
+
+with open("validated_triples.jsonl") as f:
+    for i, line in enumerate(f):
+        if i >= 3: break
+        t = json.loads(line)
+        print(f"{t['source_name']} --[{t['relation']}]--> {t['target_name']}")
+        print(f"  onset: {t['temporal']['onset_age_min']}–{t['temporal']['onset_age_max']} years")
+        print(f"  PMIDs: {t['evidence']['source_ids'][:3]}  credibility: {t['evidence']['credibility_score']:.2f}")
+```
+
+ChronoTQA benchmark (`tqa_benchmark.json`, 3.2 MB) sits at the same record. The full Zenodo deposit lists all six release files.
+
+## Pipeline architecture
+
+```
+                                ┌──────────────────────┐
+                                │     Orchestrator     │
+                                │  (workers, retry,    │
+                                │   resume, batching)  │
+                                └─────────┬────────────┘
+                                          │
+        ┌─────────────────┬───────────────┼───────────────┬─────────────────┐
+        ▼                 ▼               ▼               ▼                 ▼
+  ┌───────────┐    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+  │ Agent 1   │ →  │  Agent 2     │→ │  Agent 3     │→ │  Agent 4     │
+  │ Disease   │    │  Evidence    │  │  Knowledge   │  │  Quality     │
+  │ Profiler  │    │  Harvester   │  │  Extractor   │  │  Controller  │
+  └───────────┘    └──────────────┘  └──────────────┘  └──────────────┘
+   MONDO/OMIM/      PubMed +          DeepSeek V3 +    PrimeKG align +
+   Orphanet         PMC OA            GPT-4o-mini +    credibility +
+   profiling        retrieval         Claude Haiku     temporal checks
+                                      consensus
+        │                 │               │               │
+        ▼                 ▼               ▼               ▼
+   per-disease       raw text +       candidate         validated
+   YAML profile      metadata          triples           triples
+```
+
 ## Repository layout
 
 ```
@@ -116,6 +163,18 @@ The companion HEG-TKG paper (which validates the extraction methodology on six r
 - **Data** (Zenodo bundle): CC BY 4.0 — see `LICENSE-DATA`.
 
 Source databases retain their own licenses: PrimeKG (CC BY 4.0), HPOA (CC BY 4.0), Orphadata (CC BY-NC 3.0), GeneReviews (institutional), PMC Open Access (various). See `NOTICE` for the full attribution list.
+
+## Maintainer
+
+Md Shamim Ahmed — `shamim@imada.sdu.dk`. Issues and feature requests via the GitLab issue tracker on this repository.
+
+## Project status
+
+v0.0.1 is frozen as the bytes reviewed for the NeurIPS submission. Backlog for v1.1 (post-acceptance):
+- SapBERT entity canonicalisation across phenotype names (3× entity-space compression)
+- Backfill `citation_count` (NCBI E-utilities) and `is_retracted` (Retraction Watch) credibility signals
+- Activate the GeneReviews/OMIM Deep tier (designed in the orchestrator, not triggered in v1.0)
+- Refresh README + croissant.json inside the Zenodo deposit (currently match v0.0.1; see [decision_log.md](docs/decision_log.md))
 
 ## Disclaimer
 
