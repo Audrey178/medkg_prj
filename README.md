@@ -24,24 +24,27 @@ ChronoMedKG ships paired with **ChronoTQA**, the first temporal biomedical QA be
 
 ## Quickstart
 
-Download the validated triples from Zenodo and inspect a few records:
+Install the loader (zero hard dependencies; pulls release files from Zenodo on first call and caches them locally):
 
-```python
-import json, urllib.request
-
-url = "https://zenodo.org/records/19697543/files/validated_triples.jsonl"
-urllib.request.urlretrieve(url, "validated_triples.jsonl")  # 527 MB
-
-with open("validated_triples.jsonl") as f:
-    for i, line in enumerate(f):
-        if i >= 3: break
-        t = json.loads(line)
-        print(f"{t['source_name']} --[{t['relation']}]--> {t['target_name']}")
-        print(f"  onset: {t['temporal']['onset_age_min']}–{t['temporal']['onset_age_max']} years")
-        print(f"  PMIDs: {t['evidence']['source_ids'][:3]}  credibility: {t['evidence']['credibility_score']:.2f}")
+```bash
+pip install git+https://gitlab.sdu.dk/screen4care/chronomedkg.git
 ```
 
-ChronoTQA benchmark (`tqa_benchmark.json`, 3.2 MB) sits at the same record. The full Zenodo deposit lists all six release files.
+```python
+import chronomedkg as cmkg
+
+for i, t in enumerate(cmkg.load_triples()):           # 460,497 validated triples (502 MB)
+    if i >= 3: break
+    print(f"{t['source_name']} --[{t['relation']}]--> {t['target_name']}")
+    print(f"  onset: {t['temporal']['onset_age_min']}–{t['temporal']['onset_age_max']} years")
+    print(f"  PMIDs: {t['evidence']['source_ids'][:3]}  credibility: {t['evidence']['credibility_score']:.2f}")
+
+qa     = cmkg.load_benchmark()    # ChronoTQA, 3,341 questions
+cases  = cmkg.load_pmc_cases()    # 31 PMC diagnostic-odyssey cases
+silver = cmkg.load_consensus()    # 443,114 pre-QC consensus rows (gzipped)
+```
+
+Cache lives at `~/.cache/chronomedkg/`; override with the `CHRONOMEDKG_CACHE` env var. Direct Zenodo download via `urllib` works too; the full deposit lists all release files.
 
 ## Pipeline architecture
 
