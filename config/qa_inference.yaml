@@ -1,0 +1,34 @@
+llm:
+  model: gpt-4o-mini
+  temperature: 0.1
+  max_tokens: 4096
+
+matching:
+  fuzzy_threshold: 0.8
+  semantic_threshold: 0.7
+  embedding_model: cambridgeltl/SapBERT-from-PubMedBERT-fulltext
+  faiss_cache_path: data/faiss_kg_index.bin
+  max_candidates_per_entity: 5
+
+retrieval:
+  max_relationships_per_entity: 80
+  context_volume_threshold: 150 # fallback default
+  context_volume_by_benchmark:
+    medqa: 50
+    bioasq: 100
+    pubmedqa: 80
+  confidence_floor:
+    option: 0.70 # option entities — looser; we want all answer candidates
+    clue: 0.85 # clinical clues — strict; must be specific
+    stem: 0.80 # bioasq/pubmedqa stem entities
+
+ranking:
+  alpha: 0.5 # combined_score = alpha * credibility + (1-alpha) * cosine
+
+rate_limit:
+  max_requests_per_hour: 500
+
+api:
+  api_key_header: X-API-Key
+  host: 0.0.0.0
+  port: 8000

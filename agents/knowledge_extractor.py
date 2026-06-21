@@ -27,7 +27,6 @@ from agents.base_agent import BaseAgent
 from core.models import (
     AgentResult,
     DiseaseProfile,
-    EvidenceCollection,
     EvidenceTier,
     ExtractionResult,
     RawTriple,
@@ -290,7 +289,7 @@ class LLMClient:
                     for k in deepseek_keys
                 ]
                 self._deepseek_counter = 0
-                self._clients["deepseek-v3"] = self._deepseek_clients[0]
+                self._clients["deepseek-v4"] = self._deepseek_clients[0]
                 logger.info("DeepSeek: %d API key(s) loaded (round-robin enabled)",
                             len(deepseek_keys))
             except Exception:
@@ -315,7 +314,7 @@ class LLMClient:
                 return self._extract_openai(prompt, model_id="gpt-4o-mini")
             elif model_name == "claude-haiku":
                 return self._extract_anthropic(prompt)
-            elif model_name == "deepseek-v3":
+            elif model_name == "deepseek-v4":
                 return self._extract_deepseek(prompt)
         except Exception as e:
             logger.error("Extraction failed with %s: %s", model_name, e)
@@ -491,8 +490,8 @@ class KnowledgeExtractor(BaseAgent):
 
             # Phase 1: Primary pair (parallel)
             primary_pair = []
-            if "deepseek-v3" in self.llm.available_models:
-                primary_pair.append("deepseek-v3")
+            if "deepseek-v4" in self.llm.available_models:
+                primary_pair.append("deepseek-v4")
             if "gpt-4.1-nano" in self.llm.available_models:
                 primary_pair.append("gpt-4.1-nano")
             elif "gpt-4o-mini" in self.llm.available_models:
@@ -520,7 +519,7 @@ class KnowledgeExtractor(BaseAgent):
                 # Only call tiebreaker if one model got 0 triples (total disagreement)
                 # or if the counts are wildly different (>5x ratio suggesting extraction failure)
                 if count_a > 0 and count_b > 0:
-                    ratio = max(count_a, count_b) / max(1, min(count_a, count_b))
+                    ratio = max(count_a, count_b) / max(1, min(count_a, count_b)) # Chỉ gọi khi một model có 0 triples hoặc tỷ lệ >5x
                     if ratio <= 5:
                         need_tiebreaker = False
                         self.logger.info("    2-model extraction: %s=%d, %s=%d (ratio %.1f) — skipping tiebreaker",
@@ -873,7 +872,7 @@ class KnowledgeExtractor(BaseAgent):
     @staticmethod
     def _normalize_entity_name(name: str) -> str:
         """
-        Normalize entity name for semantic matching.
+        Normalize entity name for semantic matching. Only lowercase, strip whitespace, and remove dosage/parenthetical noise.
 
         Handles:
         - Case and whitespace
@@ -918,7 +917,7 @@ class KnowledgeExtractor(BaseAgent):
     @staticmethod
     def _canonicalize_relation(relation: str) -> str:
         """
-        Canonicalize relation names to handle model-specific phrasing.
+        Canonicalize relation names to handle model-specific phrasing. Only lowercase and strip whitespace; no semantic mapping here. Use _map_relation_synonyms for that.
 
         Maps synonymous relations to a single canonical form.
         """
@@ -967,7 +966,7 @@ class KnowledgeExtractor(BaseAgent):
     @staticmethod
     def _entity_match(name_a: str, name_b: str, fuzz) -> bool:
         """
-        Check if two normalized entity names refer to the same entity.
+        Check if two normalized entity names refer to the same entity. Only 
 
         Conservative matching to avoid union-find mega-clusters:
         1. Exact match after normalization
@@ -1000,7 +999,7 @@ class KnowledgeExtractor(BaseAgent):
             # Normalize subject
             subj_result = self.normalizer.normalize(
                 triple.subject, entity_type=triple.subject_type
-            )
+            ) # Not context aware yet; could add context from disease profile if needed
             if subj_result.primekg_id:
                 triple.subject_id = subj_result.primekg_id
                 if subj_result.confidence >= 0.80:
@@ -1009,7 +1008,7 @@ class KnowledgeExtractor(BaseAgent):
             # Normalize object
             obj_result = self.normalizer.normalize(
                 triple.object, entity_type=triple.object_type
-            )
+            ) # Not context aware yet; could add context from disease profile if needed
             if obj_result.primekg_id:
                 triple.object_id = obj_result.primekg_id
                 if obj_result.confidence >= 0.80:

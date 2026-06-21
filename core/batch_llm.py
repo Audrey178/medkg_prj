@@ -12,7 +12,7 @@ v2 improvements over v1:
 - Checkpoint-friendly: batch_ids now {provider: [batch_id, ...]} for multi-batch
 - Progress callback during polling
 - Robust error result parsing (captures error details from failed requests)
-
+ 
 Usage:
     client = BatchLLMClient()
     batch_ids = client.submit(prompts, disease_id="MONDO_1234")

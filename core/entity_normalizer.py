@@ -192,7 +192,7 @@ class PrimeKGIndex:
                     if key not in seen and name:
                         seen.add(key)
                         name_lower = name.lower().strip()
-                        self._name_to_id[name_lower] = nid
+                        self._name_to_id[name_lower] = nid # 1 node có nhiều tên ?
                         if nid not in id_names:
                             id_names[nid] = []
                         id_names[nid].append((name, ntype))
@@ -209,7 +209,7 @@ class PrimeKGIndex:
                 key=lambda x: (1 if " " in x[0] else 0, len(x[0])),
                 reverse=True,
             )
-            self._id_to_name[nid] = ranked[0][0]
+            self._id_to_name[nid] = ranked[0][0] # Pick the best name for this ID
 
         # Also build type-aware id→name for better resolution
         self._id_type_to_name: dict[tuple[str, str], str] = {}
@@ -251,9 +251,9 @@ class PrimeKGIndex:
         }
         if entity_type:
             primekg_type = type_map.get(entity_type, entity_type)
-            type_idx = self._type_index.get(primekg_type, {})
-            if text_lower in type_idx:
-                nid = type_idx[text_lower]
+            type_name_idx = self._type_index.get(primekg_type, {})
+            if text_lower in type_name_idx:
+                nid = type_name_idx[text_lower]
                 # Get type-aware canonical name
                 canonical = self._id_type_to_name.get(
                     (nid, primekg_type), self._id_to_name.get(nid, text)
@@ -542,7 +542,7 @@ class EntityNormalizer:
         Args:
             text: Raw entity mention from extraction
             entity_type: PrimeKG node type
-            context: Surrounding text for disambiguation
+            context: Surrounding text for disambiguation 
 
         Returns:
             NormalizationResult with multi-ontology IDs and provenance

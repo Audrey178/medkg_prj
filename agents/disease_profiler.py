@@ -44,7 +44,7 @@ class DiseaseProfiler(BaseAgent):
 
     def __init__(self, config: dict, primekg_data: dict | None = None):
         super().__init__(config, logger)
-        self.primekg_data = primekg_data or {}
+        self.primekg_data = primekg_data or {} # primekg_data lấy ở đâu
         self.ncbi_api_key = os.environ.get("NCBI_API_KEY", "")
         self.omim_api_key = os.environ.get("OMIM_API_KEY", "")
         self._config_dir = PROJECT_ROOT / "config" / "diseases"
@@ -156,7 +156,7 @@ class DiseaseProfiler(BaseAgent):
                 titles = entry.get("titles", {})
 
                 # Synonyms from alternative titles
-                alt_titles = titles.get("alternativeTitles", "")
+                alt_titles = titles.get("alternativeTitles", "") 
                 if alt_titles:
                     profile.synonyms.extend(
                         [t.strip() for t in alt_titles.split(";;") if t.strip()]

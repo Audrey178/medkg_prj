@@ -157,12 +157,12 @@ class Orchestrator:
 
             # Literature-adaptive tiering: adjust max docs based on
             # disease literature availability (coverage_flag from profiler)
-            configured_max = self.config.get("max_extraction_docs", 200)
+            configured_max = self.config.get("max_extraction_docs", 200) # số lượng tài liệu tối đa được cấu hình
             coverage = profile.get("coverage_flag", "moderate")
             pubmed_count = profile.get("pubmed_article_count",
                                        profile.get("pubmed_count", 0))
 
-            if coverage == "rich":
+            if coverage == "rich": # Large tier: limitation = 200
                 # Deep tier: GeneReviews + >500 PubMed — full 200 docs
                 adaptive_max = min(configured_max, 200)
                 tier_label = "Deep"

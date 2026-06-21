@@ -28,16 +28,17 @@ rapidfuzz==3.14.3            # consensus fuzzy entity match
 # --- KG storage ---
 neo4j==5.28.0                # optional; Cypher-based downstream analytics
 
+# --- QA inference pipeline ---
+langgraph>=0.2
+sentence-transformers>=2.7.0
+faiss-cpu>=1.8.0
+fastapi[standard]>=0.115.0
+uvicorn[standard]>=0.30.0
+
 # --- ML + eval ---
-torch==2.7.0                 # link-prediction embeddings (TransE)
 scikit-learn==1.8.0          # clustering (§6.3), LR calibration
 hdbscan==0.8.40              # §6.3 density-based sensitivity
 scipy==1.14.1                # statistical tests (Welch's t, McNemar)
-
-# --- Text evaluation (TQA scorer calibration) ---
-rouge-score==0.1.2
-bert-score==0.3.13
-
 # --- Release tooling ---
 huggingface_hub==0.26.5      # HF dataset upload
 jsonschema==4.23.0           # Croissant validation

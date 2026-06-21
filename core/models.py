@@ -110,6 +110,9 @@ CARRIER_TO_PRIMEKG: dict[str, PrimeKGRelationType] = {
     "onset_at": PrimeKGRelationType.DISEASE_PHENOTYPE_POSITIVE,
 }
 
+# ---------------------------------------------------------------------------
+# Credibility scoring enums and dataclasses
+# ---------------------------------------------------------------------------
 
 class EvidenceTier(Enum):
     """Evidence hierarchy tiers."""

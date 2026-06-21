@@ -162,6 +162,7 @@ class CredibilityScorer:
         """Score based on retraction status. Retracted = 0."""
         return 0.0 if is_retracted else 1.0
 
+    #  Main scoring function
     def compute(
         self,
         journal_name: str | None = None,
@@ -194,6 +195,7 @@ class CredibilityScorer:
 
         return round(min(1.0, max(0.0, score)), 4), signals
 
+    # Main scoring function for Tier 1 sources (GeneReviews, OMIM, Orphanet)
     def score_tier1_source(self, source_type: str) -> tuple[float, CredibilitySignals]:
         """
         Tier 1 sources (GeneReviews, OMIM, Orphanet) get high default scores.
