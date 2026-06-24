@@ -1,0 +1,35 @@
+{
+  "n_questions": 200,
+  "models": [
+    "gpt-4o-mini"
+  ],
+  "kg_source": "local",
+  "top_k": 15,
+  "retrieval_stats": {
+    "total": 200,
+    "hits": 200,
+    "total_triples": 3000
+  },
+  "results": {
+    "gpt-4o-mini": {
+      "base": {
+        "accuracy": 0.22,
+        "n": 200,
+        "ci": [
+          0.22,
+          0.16,
+          0.28
+        ]
+      },
+      "kg": {
+        "accuracy": 0.22,
+        "n": 200,
+        "ci": [
+          0.22,
+          0.165,
+          0.28
+        ]
+      }
+    }
+  }
+}

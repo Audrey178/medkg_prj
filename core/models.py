@@ -443,6 +443,19 @@ class DiseaseProfile:
     key_genes: list[str] = field(default_factory=list)
     key_phenotypes: list[str] = field(default_factory=list)
     mesh_terms: list[str] = field(default_factory=list)
+    
+    # Tier 1 extension: molecular databases (no API key)
+    has_uniprot: bool = False
+    uniprot_accession: dict[str, str] = field(default_factory=dict)  # gene_symbol -> accession
+    has_reactome: bool = False
+    reactome_pathways: list[str] = field(default_factory=list)  # pathway IDs
+    
+    # MeSH hierarchy - query expansion support only.
+    # Agent 1 used to broaden/narrow
+    # PubMed query generation and (future) retrieval
+    mesh_descriptor_id: Optional[str] = None
+    mesh_tree_numbers: list[str] = field(default_factory=list)
+    mesh_broaden_terms: list[str] = field(default_factory=list)
 
     # Extraction strategy (auto-determined)
     tier1_sources: list[str] = field(default_factory=list)

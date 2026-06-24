@@ -254,6 +254,7 @@ class DiseaseProfiler(BaseAgent):
                                  profile.primekg_neighbor_count,
                                  profile.primekg_edge_types[:5])
                 break
+            
 
     def _estimate_literature(self, profile: DiseaseProfile) -> None:
         """Estimate PubMed article count for this disease."""
@@ -295,6 +296,7 @@ class DiseaseProfiler(BaseAgent):
         except Exception as e:
             self.logger.warning("PubMed count estimation failed: %s", e)
 
+    # [TODO]: Update 
     def _generate_strategy(self, profile: DiseaseProfile) -> None:
         """Determine extraction strategy based on available sources."""
         # Coverage flag

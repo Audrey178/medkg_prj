@@ -16,6 +16,7 @@ from .nodes.intent_node import intent_node
 from .nodes.retrieval_node import retrieval_node
 from .nodes.context_node import context_node
 from .nodes.answer_node import answer_node
+from .nodes.localize_node import localize_node
 
 
 _CONFIG_PATH = Path(__file__).parent.parent.parent / "config" / "qa_inference.yaml"
@@ -35,6 +36,7 @@ def build_graph() -> StateGraph:
     graph.add_node("retrieval", retrieval_node)
     graph.add_node("context", context_node)
     graph.add_node("answer", answer_node)
+    graph.add_node("localize", localize_node)
 
     graph.set_entry_point("translate")
     graph.add_edge("translate", "entity")
@@ -42,7 +44,12 @@ def build_graph() -> StateGraph:
     graph.add_edge("intent", "retrieval")
     graph.add_edge("retrieval", "context")
     graph.add_edge("context", "answer")
-    graph.add_edge("answer", END)
+    graph.add_conditional_edges(
+        "answer",
+        lambda s: "localize" if s.get("lang_detected", "en") not in ("en", "unknown", "") else END,
+        {"localize": "localize", END: END},
+    )
+    graph.add_edge("localize", END)
 
     return graph.compile()
 
@@ -83,6 +90,7 @@ class QAPipeline:
             "latency_ms": 0.0,
             "tokens_used": 0,
             "error": None,
+            "lang_localized": False,
         }
 
         final_state = self._graph.invoke(initial_state)
@@ -97,6 +105,7 @@ class QAPipeline:
             "kg_coverage": final_state["kg_coverage"],
             "matched_entities": [n["name"] for n in final_state["matched_nodes"]],
             "lang_detected": final_state["lang_detected"],
+            "lang_localized": final_state["lang_localized"],
             "latency_ms": final_state["latency_ms"],
             "tokens_used": final_state["tokens_used"],
             "error": final_state["error"],

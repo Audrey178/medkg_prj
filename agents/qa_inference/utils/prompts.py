@@ -4,6 +4,7 @@ Prompt templates for the KG-RAG QA pipeline.
 Sections:
   - TRANSLATE: language detection + translation
   - NER: biomedical entity extraction
+  - CONSTRAINTS: evidence / selection / content / citation / output rules
   - ANSWER: 6 answer templates (added in TIP-009)
 """
 
@@ -144,14 +145,99 @@ Return 1-3 most relevant relation types."""
 
 
 # ---------------------------------------------------------------------------
+# Evidence constraint / selection / content / citation / output rules
+# ---------------------------------------------------------------------------
+
+EVIDENCE_CONSTRAINT = """\
+EVIDENCE CONSTRAINT:
+- Use ONLY knowledge graph triples provided in the context block above.
+- Do not fabricate edges, PMIDs, credibility scores, or onset windows absent from the context.
+- If the context is empty or contains no relevant triples, state that the KG lacks coverage \
+and fall back to general biomedical knowledge — flag this explicitly in the explanation.
+- Triples with credibility_score < 0.5 are low-confidence; treat them as corroborating, \
+not primary, evidence.
+- Temporal metadata (onset_min_months, onset_max_months) must be reproduced exactly as given; \
+do not round or extrapolate."""
+
+EVIDENCE_SELECTION = """\
+EVIDENCE SELECTION:
+- Prefer triples whose subject or object exactly matches a key entity in the question.
+- When multiple triples conflict, prefer the one with the higher credibility_score.
+- Prefer Tier 1 sources (GeneReviews, OMIM, Orphanet) over Tier 2 (PubMed abstracts) \
+when both cover the same claim.
+- Discard triples whose relation type is irrelevant to the question's intent \
+(e.g., skip drug-indication triples for a gene–phenotype question).
+- Use at most 5 triples as primary evidence; summarise any remaining context in aggregate."""
+
+CONTENT_RULES = """\
+CONTENT RULES:
+- Use standard biomedical nomenclature: OMIM/Orphanet disease names, HGNC gene symbols, \
+INN drug names.
+- Include quantitative values (onset windows, credibility scores, effect sizes) \
+when present in context.
+- Do not contradict a high-credibility (≥ 0.7) KG triple with unsupported general knowledge.
+- When the question concerns temporal onset, always report the full range \
+(min–max months or years) if available in context.
+- Distinguish confirmed associations (credibility ≥ 0.7), provisional ones (0.5–0.7), \
+and speculative ones (< 0.5)."""
+
+CITATION_RULES = """\
+CITATION RULES:
+- Cite PMIDs inline as [PMID:XXXXXXXX] immediately after the claim they support.
+- Cite Tier 1 sources by name: [GeneReviews], [OMIM:XXXXXX], [Orphanet:XXXXXX].
+- Do not invent PMIDs or accession numbers; omit the citation bracket if the PMID \
+is not present in context.
+- When multiple triples support the same claim, list all PMIDs: [PMID:111, PMID:222].
+- For KG-derived onset windows, append the source triple's credibility score: \
+e.g., "onset 12–36 months (credibility 0.82) [PMID:12345678]"."""
+
+OUTPUT_RULES = """\
+OUTPUT:
+- Return valid JSON only — no markdown fences, no prose outside the JSON object.
+- All string values must be UTF-8 safe; escape special characters properly.
+- Do not include keys beyond those specified in the template.
+- If a required key cannot be populated from context or knowledge, set its value to null \
+(not an empty string).
+- The "explanation" field must reference at least one context triple, \
+or state "no KG context" when falling back to general knowledge."""
+
+
+def build_constraint_block(
+    *,
+    evidence_constraint: bool = True,
+    evidence_selection: bool = True,
+    content_rules: bool = True,
+    citation_rules: bool = True,
+    output_rules: bool = True,
+) -> str:
+    """Compose selected rule sections into a single block for injection into answer prompts."""
+    parts = []
+    if evidence_constraint:
+        parts.append(EVIDENCE_CONSTRAINT)
+    if evidence_selection:
+        parts.append(EVIDENCE_SELECTION)
+    if content_rules:
+        parts.append(CONTENT_RULES)
+    if citation_rules:
+        parts.append(CITATION_RULES)
+    if output_rules:
+        parts.append(OUTPUT_RULES)
+    return "\n\n".join(parts)
+
+
+# Baked once at import time; all ANSWER_TEMPLATES system prompts embed this block.
+_CONSTRAINT_BLOCK = build_constraint_block()
+
+
+# ---------------------------------------------------------------------------
 # Answer templates — 6 templates for BioASQ×4 + MEDQA + PubMedQA
 # ---------------------------------------------------------------------------
 
 _ANSWER_SYSTEM_BASE = (
     "You are a biomedical expert. "
     "Answer the question using the provided knowledge graph context when available. "
-    "Base your answer on the context; use your knowledge only when context is insufficient. "
-    "Return valid JSON only — no markdown, no extra text."
+    "Base your answer on the context; use your knowledge only when context is insufficient.\n\n"
+    + _CONSTRAINT_BLOCK
 )
 
 # Shared context block prefix
@@ -211,8 +297,8 @@ ANSWER_TEMPLATES: dict[str, dict] = {
             "You are a medical expert specializing in USMLE-style questions. "
             "When Knowledge Graph Context is provided, evaluate each answer option against it: "
             "if the context directly mentions an option's disease or drug with clinically relevant facts, cite it as evidence; "
-            "if context entries are about unrelated entities (different disease, unrelated drug), ignore them and rely on clinical reasoning. "
-            "Return valid JSON only."
+            "if context entries are about unrelated entities (different disease, unrelated drug), ignore them and rely on clinical reasoning.\n\n"
+            + _CONSTRAINT_BLOCK
         ),
         "user": (
             "{context_block}"
@@ -228,8 +314,8 @@ ANSWER_TEMPLATES: dict[str, dict] = {
     "yes_no_maybe": {
         "system": (
             "You are a biomedical research expert. "
-            "Answer PubMed research questions based on the provided evidence. "
-            "Return valid JSON only."
+            "Answer PubMed research questions based on the provided evidence.\n\n"
+            + _CONSTRAINT_BLOCK
         ),
         "user": (
             "{context_block}"
@@ -253,3 +339,34 @@ def build_context_block(sentences: list[str]) -> str:
 def format_mcq_options(options: dict) -> str:
     """Format MEDQA options dict → readable string."""
     return "\n".join(f"{k}. {v}" for k, v in sorted(options.items()))
+
+
+# ---------------------------------------------------------------------------
+# Localization (answer_node output → target language)
+# ---------------------------------------------------------------------------
+
+LOCALIZE_SYSTEM = (
+    "You are a biomedical translation assistant. "
+    "Translate only the specified text fields of a JSON answer object "
+    "into the target language. "
+    "Preserve exact JSON structure, keys, and non-text values. "
+    "Return valid JSON only."
+)
+
+LOCALIZE_USER = """\
+Target language: {language_name} (ISO code: {lang_code})
+
+Answer JSON to translate:
+{answer_json}
+
+Fields to translate (free-text only):
+{fields_to_translate}
+
+Rules:
+- Translate ONLY the listed fields. Copy all other fields unchanged.
+- For list fields: translate each element individually.
+- Preserve null values as null.
+- Use standard biomedical terminology in the target language.
+- Do NOT translate controlled-vocabulary values: "yes", "no", "maybe", \
+single option letters (A/B/C/D/E).
+- Return the complete JSON object with all original keys."""

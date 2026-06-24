@@ -43,3 +43,6 @@ class QAState(TypedDict):
     latency_ms: float
     tokens_used: int
     error: Optional[str]
+
+    # --- localize_node ---
+    lang_localized: bool

@@ -73,7 +73,6 @@ async def health(request: Request):
 async def query(
     req: QueryRequest,
     request: Request,
-    _key: Annotated[str, Depends(verify_api_key)],
 ):
     limiter: RateLimiter = _get_rate_limiter(request)
     if not limiter.check_and_record():
@@ -118,7 +117,6 @@ async def query(
 async def batch(
     req: BatchRequest,
     request: Request,
-    _key: Annotated[str, Depends(verify_api_key)],
 ):
     limiter: RateLimiter = _get_rate_limiter(request)
     pipeline = _get_pipeline(request)
