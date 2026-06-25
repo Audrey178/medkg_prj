@@ -157,11 +157,15 @@ class QualityController(BaseAgent):
                 rejected.append({"triple": triple.to_dict(), "reason": reason})
                 report.rejected_triples += 1
 
+        # Tier 3.2: aggregate cross-source claims before supersession detection
+        validated_triples = self._aggregate_cross_source(validated_triples)
+        report.validated_triples = len(validated_triples)  # update count after merge
+
         # Detect conflicts within validated set
         conflicts = self._detect_conflicts(validated_triples)
         report.conflicts_detected = len(conflicts)
 
-        # Run temporal reasoning (supersession, validity inference, consistency)
+        # Run temporal reasoning (supersession after aggregation, per Tier 3.2 decision)
         temporal_result = self.temporal_reasoner.reason(validated_triples)
         self.logger.info("Temporal reasoning: %d supersessions, %d issues",
                          temporal_result.supersessions_detected,
@@ -369,8 +373,9 @@ class QualityController(BaseAgent):
             "drug": PrimeKGNodeType.DRUG,
             "treatment": PrimeKGNodeType.DRUG,
             "phenotype": PrimeKGNodeType.PHENOTYPE,
-            "symptom": PrimeKGNodeType.PHENOTYPE,
             "effect/phenotype": PrimeKGNodeType.PHENOTYPE,
+            "symptom": PrimeKGNodeType.CLINICAL_FINDING,       # acute/presenting — Tier 1.2
+            "clinical_finding": PrimeKGNodeType.CLINICAL_FINDING,
             "anatomy": PrimeKGNodeType.ANATOMY,
             "pathway": PrimeKGNodeType.PATHWAY,
             "biological_process": PrimeKGNodeType.BIOLOGICAL_PROCESS,
@@ -379,6 +384,110 @@ class QualityController(BaseAgent):
             "exposure": PrimeKGNodeType.EXPOSURE,
         }
         return mapping.get(type_lower, PrimeKGNodeType.PHENOTYPE)
+
+    def _aggregate_cross_source(self, edges: list[TemporalEdge]) -> list[TemporalEdge]:
+        """
+        Tier 3.2: aggregate edges representing the same claim from multiple source documents.
+
+        Algorithm: Union-Find on (relation, fuzzy-subject, fuzzy-object), same as
+        KnowledgeExtractor._compute_consensus (Appendix C.3) but applied at the
+        TemporalEdge level across different PMIDs instead of across LLM models.
+
+        Runs BEFORE supersession detection so the temporal reasoner operates on
+        already-merged, stronger claims.
+
+        Merged edge gets:
+          - source_ids = union of all contributing PMIDs
+          - credibility_score = max across contributors
+          - consensus_confidence = max(original, min(1.0, n_sources * 0.33))
+          - extraction_models = union across contributors
+        """
+        if len(edges) < 2:
+            return edges
+
+        try:
+            from rapidfuzz import fuzz
+        except ImportError:
+            logger.warning("rapidfuzz unavailable — skipping cross-source aggregation")
+            return edges
+
+        import copy
+
+        # Union-Find helpers
+        parent = list(range(len(edges)))
+
+        def find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(x: int, y: int) -> None:
+            px, py = find(x), find(y)
+            if px != py:
+                parent[px] = py
+
+        # Partition by relation first to keep O(n^2) within-relation only
+        rel_groups: dict[str, list[int]] = {}
+        for i, edge in enumerate(edges):
+            rel_groups.setdefault(edge.relation.value, []).append(i)
+
+        for group in rel_groups.values():
+            if len(group) < 2:
+                continue
+            for i in range(len(group)):
+                for j in range(i + 1, len(group)):
+                    a_idx, b_idx = group[i], group[j]
+                    a, b = edges[a_idx], edges[b_idx]
+                    # Only aggregate if they come from DIFFERENT source documents
+                    if set(a.evidence.source_ids) & set(b.evidence.source_ids):
+                        continue
+                    subj_score = fuzz.token_sort_ratio(a.source_name.lower(), b.source_name.lower())
+                    obj_score = fuzz.token_sort_ratio(a.target_name.lower(), b.target_name.lower())
+                    if subj_score >= 80 and obj_score >= 80:
+                        union(a_idx, b_idx)
+
+        # Collect clusters and merge
+        clusters: dict[int, list[int]] = {}
+        for i in range(len(edges)):
+            clusters.setdefault(find(i), []).append(i)
+
+        merged: list[TemporalEdge] = []
+        n_aggregated = 0
+        for members in clusters.values():
+            if len(members) == 1:
+                merged.append(edges[members[0]])
+                continue
+
+            member_edges = [edges[i] for i in members]
+            representative = max(member_edges, key=lambda e: e.evidence.credibility_score)
+
+            all_source_ids = list({
+                sid for e in member_edges for sid in e.evidence.source_ids if sid
+            })
+            all_models = list({
+                m for e in member_edges for m in e.evidence.extraction_models
+            })
+            max_cred = max(e.evidence.credibility_score for e in member_edges)
+            multi_conf = min(1.0, len(member_edges) * 0.33)
+
+            rep = copy.copy(representative)
+            rep.evidence = copy.copy(representative.evidence)
+            rep.evidence.source_ids = all_source_ids
+            rep.evidence.extraction_models = all_models
+            rep.evidence.credibility_score = max_cred
+            rep.evidence.consensus_confidence = max(
+                representative.evidence.consensus_confidence, multi_conf
+            )
+            merged.append(rep)
+            n_aggregated += len(members) - 1
+
+        if n_aggregated:
+            self.logger.info(
+                "Cross-source aggregation: merged %d edges → %d (-%d duplicates)",
+                len(edges), len(merged), n_aggregated,
+            )
+        return merged
 
     def _detect_conflicts(self, edges: list[TemporalEdge]) -> list[dict]:
         """Detect conflicting edges (same entities, contradictory relations)."""
@@ -408,6 +517,14 @@ class QualityController(BaseAgent):
                     PrimeKGRelationType.DISEASE_PHENOTYPE_NEGATIVE in relations):
                 conflicts.append({
                     "type": "phenotype_positive_negative_conflict",
+                    "entities": key,
+                    "relations": [r.value for r in relations],
+                })
+
+            if (PrimeKGRelationType.FIRST_LINE_TREATMENT in relations and
+                    PrimeKGRelationType.CONTRAINDICATION in relations):
+                conflicts.append({
+                    "type": "first_line_contraindication_conflict",
                     "entities": key,
                     "relations": [r.value for r in relations],
                 })

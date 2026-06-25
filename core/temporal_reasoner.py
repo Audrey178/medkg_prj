@@ -81,6 +81,8 @@ SUPERSEDABLE_RELATIONS = {
     PrimeKGRelationType.CONTRAINDICATION,
     PrimeKGRelationType.CARRIER_TREATS,
     PrimeKGRelationType.OFF_LABEL_USE,
+    PrimeKGRelationType.FIRST_LINE_TREATMENT,   # guidelines update first-line over time
+    PrimeKGRelationType.SECOND_LINE_TREATMENT,
 }
 
 # Relations where contradictory pairs indicate supersession

@@ -1,0 +1,108 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What this project is
+
+ChronoMedKG is a research pipeline that builds a temporally-grounded biomedical knowledge graph. It runs a four-agent pipeline over disease identifiers to produce validated triples — each edge carries onset windows, PMID-traceable evidence, and a six-signal credibility score. The dataset itself is on Zenodo; this repo contains only the construction pipeline and experiment scripts.
+
+The installable `chronomedkg` package (under `chronomedkg/`) is a thin zero-dependency loader that streams the Zenodo release files. The `agents/`, `core/`, and `scripts/` trees are the research pipeline and are not installed via pyproject.toml.
+
+## Environment setup
+
+```bash
+# Python 3.12 (Anaconda or any 3.12 venv)
+pip install -r requirements.txt
+
+# Copy and fill in API keys
+cp .env.example .env
+# Required for extraction: OPENAI_API_KEY, ANTHROPIC_API_KEY, NCBI_API_KEY
+# Required for disease profiling: OMIM_API_KEY
+# Optional: GOOGLE_API_KEY, DEEPSEEK_API_KEY, NEO4J_*
+```
+
+SapBERT canonicalisation (`core/entity_normalizer.py`) requires a separate `.venv-sapbert` environment symlinked from the companion HEG-TKG project. The main pipeline works without it.
+
+## Running the pipeline
+
+```bash
+# Single disease (runs agents 1→2→3→4)
+python -m agents.orchestrator --disease-id "OMIM:310200" --disease-name "Duchenne muscular dystrophy"
+
+# Batch from TSV file (disease_id<TAB>disease_name, with resume by default)
+python -m agents.orchestrator --disease-file diseases.txt --workers 3
+
+# Re-run Quality Controller only (no LLM extraction cost)
+python -m agents.orchestrator --qc-only --disease-id "OMIM:310200"
+
+# Force re-run (ignore already-completed diseases)
+python -m agents.orchestrator --disease-file diseases.txt --no-resume
+```
+
+Intermediate results are cached under `data/extracted/{disease_id}/`. Resume is on by default: a disease is skipped if `validated_triples.jsonl` and `consensus_triples.jsonl` (>10 lines) already exist for it.
+
+## Architecture
+
+### Four-agent pipeline (in `agents/`)
+
+All agents extend `BaseAgent` (retry with exponential backoff, metrics collection). The orchestrator runs them sequentially per disease:
+
+1. **`disease_profiler.py`** — Resolves OMIM/Orphanet/MONDO cross-references, checks Tier 1 source availability (GeneReviews, OMIM, Orphanet), counts PubMed articles, and produces a `DiseaseProfile` (saved as `config/diseases/{disease_id}.yaml`). Gate: `has_sufficient_sources()` — diseases with no curated sources and <10 PubMed articles are skipped.
+
+2. **`evidence_harvester.py`** — Collects Tier 1 (GeneReviews full text, OMIM synopsis, Orphanet data) and Tier 2 (PubMed abstracts, PMC full-text) documents. Applies literature-adaptive tiering: Standard (≥100 articles) caps at 150 docs; Light/Minimal tiers take all available. Saves `evidence_collection.json.gz` to the cache dir.
+
+3. **`knowledge_extractor.py`** — Runs three LLMs in parallel (GPT-4o-mini, Claude Sonnet, Gemini Flash) using the `EXTRACTION_PROMPT` defined in that file. A triple is retained as consensus only if ≥2 models extract it from the same document with entity fuzzy match ≥80% (via `rapidfuzz`) and the same canonical relation. Writes `consensus_triples.jsonl`.
+
+4. **`quality_controller.py`** — Aligns triples to PrimeKG's schema, applies the six-signal credibility scorer, runs temporal-plausibility checks, and emits `validated_triples.jsonl`. Assigns quality grades A/B/C.
+
+### Core modules (in `core/`)
+
+- **`models.py`** — All dataclasses: `TemporalEdge`, `TemporalMetadata`, `EvidenceMetadata`, `ConditionalContext`, `DiseaseProfile`, `AgentResult`, etc. `TemporalEdge` is the canonical output unit. The `CARRIER_TO_PRIMEKG` dict maps extraction-time relation strings to PrimeKG edge types.
+- **`credibility_scorer.py`** — Six-signal weighted scoring (journal tier, citation velocity, study type, replication, retraction, LLM consensus). Weights come from `config/default.yaml`.
+- **`schema_alignment.py`** — `PrimeKGIndex`: loads PrimeKG's node/edge tables, provides lookup for entity IDs and relation canonicalisation. Shared across agents and loaded once per orchestrator run.
+- **`temporal_reasoner.py`** — Temporal scope inference.
+- **`entity_normalizer.py`** — SapBERT + scispaCy UMLS entity normalisation (requires `.venv-sapbert`).
+- **`batch_llm.py`** — Async multi-model LLM dispatch.
+
+### Loader package (in `chronomedkg/`)
+
+`chronomedkg/loader.py` is the installable public API. It uses only stdlib (`urllib`, `gzip`, `json`, `pathlib`) and streams JSONL from Zenodo. Cache at `~/.cache/chronomedkg/`; override with `CHRONOMEDKG_CACHE`.
+
+### Configuration
+
+`config/default.yaml` holds pipeline-wide defaults (LLM models, extraction limits, credibility weights, quality thresholds). Per-disease YAML profiles generated by Agent 1 live in `config/diseases/`. Ten example profiles are shipped in `config/diseases_examples/`.
+
+### Data flow
+
+```
+config/default.yaml
+        │
+        ▼
+Orchestrator → DiseaseProfiler → EvidenceHarvester → KnowledgeExtractor → QualityController
+                     │                  │                    │                    │
+            config/diseases/    data/extracted/         consensus_triples    validated_triples
+              {id}.yaml           {id}/                   .jsonl               .jsonl
+```
+
+## Experiment scripts
+
+Scripts in `scripts/` each reproduce a specific paper figure or table. They read from the Zenodo bundle (via the loader) or from `data/extracted/`. Key ones:
+
+| Script | Purpose |
+|--------|---------|
+| `build_tqa_v6.py` | ChronoTQA benchmark generation |
+| `run_rag_experiment_v3.py` | RAG long-tail rescue (Section 5) |
+| `llm_judge_novelty_v2_multi.py` | Three-LLM novel-coverage audit |
+| `error_taxonomy_v2.py` | Strict error taxonomy (Section 4.3) |
+| `experiment_link_prediction_v4_sapbert.py` | TransE/DistMult ablation |
+| `experiment_trajectory_clustering_raw.py` | Trajectory clustering (Section 6.3) |
+
+Random seeds are fixed: `{42, 7, 123}` for link prediction (paired t-test), `42` for novelty audit sampling.
+
+## Key design decisions
+
+- **No per-disease code**: everything is parameterised by `DiseaseProfile`. Adding a new disease means only providing its ID and name.
+- **Parallel mode uses threads, not async tasks**: agents use synchronous I/O (`urllib`, `time.sleep`). `_run_parallel` in the orchestrator uses `ThreadPoolExecutor`; each thread gets its own `Orchestrator` instance but shares the parent's `PrimeKGIndex` to avoid OOM.
+- **Consensus threshold**: a triple must be agreed on by ≥2/3 LLMs (`consensus_threshold: 2` in config). Changing this significantly affects triple yield vs. precision.
+- **Credibility minimum**: triples with `credibility_score < 0.3` are rejected by the Quality Controller (`min_credibility_score` in config).
+- **`google-generativeai==0.8.6`** is deprecated (v1.1 migrates to `google.genai`) but is load-bearing; do not upgrade without migrating call sites.

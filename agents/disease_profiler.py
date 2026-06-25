@@ -30,8 +30,10 @@ import yaml
 from agents.base_agent import BaseAgent
 from core.models import (
     AgentResult,
+    BioASQProfile,
     CoverageFlag,
     DiseaseProfile,
+    RawTriple,
 )
 
 logger = logging.getLogger(__name__)
@@ -52,12 +54,18 @@ class DiseaseProfiler(BaseAgent):
 
     async def run(self, input_data: dict) -> AgentResult:
         """
-        Build a DiseaseProfile for the given disease.
+        Build a DiseaseProfile for the given disease, or process a BioASQ batch.
 
-        input_data:
+        input_data (disease-driven mode):
             disease_id: str (OMIM ID, Orphanet code, or MONDO ID)
             disease_name: str
+        input_data (bioasq_data mode):
+            mode: "bioasq_data"
+            file_path: str  path to BioASQ JSON {"questions": [...]}
         """
+        if input_data.get("mode") == "bioasq_data":
+            return await self._run_bioasq_mode(input_data)
+
         disease_id = input_data["disease_id"]
         disease_name = input_data["disease_name"]
 
@@ -86,6 +94,9 @@ class DiseaseProfiler(BaseAgent):
         # Step 6: Identify differential diagnosis partners
         await self._identify_differentials(profile)
 
+        # Step 7: Convert differential_diseases to tier1_relations (ontology-derived, no LLM)
+        self._build_tier1_relations(profile)
+
         # Save as YAML config
         config_path = self._save_config(profile)
 
@@ -106,6 +117,87 @@ class DiseaseProfiler(BaseAgent):
                 "primekg_edges": profile.primekg_neighbor_count,
                 "coverage_flag": profile.coverage_flag.value,
                 "sufficient_sources": profile.has_sufficient_sources(),
+            },
+            timestamp=datetime.utcnow(),
+        )
+
+    async def _run_bioasq_mode(self, input_data: dict) -> AgentResult:
+        """Process a BioASQ Task B JSON file; return one BioASQProfile per question."""
+        import json as _json
+
+        file_path = input_data["file_path"]
+        self.logger.info("BioASQ mode: reading %s", file_path)
+
+        with open(file_path, encoding="utf-8") as fh:
+            data = _json.load(fh)
+
+        items = data.get("questions", [])
+        total_items = len(items)
+        profiles: list[BioASQProfile] = []
+        error_count = 0
+
+        for item in items:
+            if not all(k in item for k in ("id", "body", "documents")):
+                self.logger.warning("BioASQ item missing required fields (id/body/documents), skipping: %s",
+                                    str(item)[:120])
+                error_count += 1
+                continue
+
+            try:
+                pmids = [url.rsplit("/", 1)[-1] for url in item["documents"]]
+                pmid_set = set(pmids)
+
+                snippet_pmids = set()
+                for snip in item.get("snippets", []):
+                    doc_url = snip.get("document", "")
+                    if doc_url:
+                        snippet_pmids.add(doc_url.rsplit("/", 1)[-1])
+
+                pmids_with_snippet = [p for p in pmids if p in snippet_pmids]
+                pmids_missing_snippet = [p for p in pmids if p not in snippet_pmids]
+
+                ideal = item.get("ideal_answer", [])
+                if isinstance(ideal, str):
+                    ideal = [ideal]
+
+                profile = BioASQProfile(
+                    bioasq_id=item["id"],
+                    question_body=item["body"],
+                    question_type=item.get("type", ""),
+                    pmids=pmids,
+                    document_urls=list(item["documents"]),
+                    snippets=item.get("snippets", []),
+                    concepts=item.get("concepts", []),
+                    ideal_answer=ideal,
+                    pmids_with_snippet=pmids_with_snippet,
+                    pmids_missing_snippet=pmids_missing_snippet,
+                )
+                profiles.append(profile)
+            except Exception as exc:
+                self.logger.warning("Failed to build BioASQProfile for item %s: %s",
+                                    item.get("id", "?"), exc)
+                error_count += 1
+
+        if profiles and error_count == 0:
+            status = "success"
+        elif profiles:
+            status = "partial"
+        else:
+            status = "failed"
+
+        self.logger.info("BioASQ mode: %d/%d valid profiles, %d errors",
+                         len(profiles), total_items, error_count)
+
+        return AgentResult(
+            agent_name="DiseaseProfiler",
+            disease_id="BIOASQ_BATCH",
+            status=status,
+            data={"profiles": [p.to_dict() for p in profiles]},
+            metrics={
+                "total_samples": total_items,
+                "valid_profiles": len(profiles),
+                "skipped_invalid_item": error_count,
+                "skipped_no_snippet_match": sum(len(p.pmids_missing_snippet) for p in profiles),
             },
             timestamp=datetime.utcnow(),
         )
@@ -338,6 +430,30 @@ class DiseaseProfiler(BaseAgent):
         # Fallback: LLM-based identification (to be implemented with actual LLM call)
         # For Phase 0, leave empty — will be filled by LLM in Phase 1
         self.logger.info("No differential diseases found yet — will use LLM in extraction phase")
+
+    def _build_tier1_relations(self, profile: DiseaseProfile) -> None:
+        """Convert differential_diseases into tier1_relations (ontology-derived, not LLM).
+
+        Kept separate from consensus_triples so downstream agents can distinguish
+        'LLM extracted' from 'ontology asserted'.
+        """
+        source_id = profile.omim_id or profile.mondo_id or profile.orphanet_id or ""
+        for dd_name in profile.differential_diseases:
+            triple = RawTriple(
+                subject=profile.disease_name,
+                subject_type="disease",
+                relation="differential_diagnosis",
+                object=dd_name,
+                object_type="disease",
+                source_id=source_id,
+                extraction_model="tier1_ontology",
+                confidence=1.0,
+                evidence_text="",  # Tier-1 structured field — no verbatim quote
+            )
+            profile.tier1_relations.append(triple)
+        if profile.tier1_relations:
+            self.logger.info("Built %d tier1_relations from differential_diseases",
+                             len(profile.tier1_relations))
 
     def _save_config(self, profile: DiseaseProfile) -> Path:
         """Save DiseaseProfile as YAML config."""

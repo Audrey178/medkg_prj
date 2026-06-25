@@ -55,8 +55,9 @@ CRITICAL: Every relationship you extract MUST include temporal information when 
 ## Output format
 Return a JSON array. Each object MUST have:
 - subject: entity name
-- subject_type: one of [disease, gene/protein, drug, phenotype, anatomy, pathway, biological_process, exposure]
-- relation: one of [disease_protein, indication, contraindication, disease_phenotype_positive, disease_phenotype_negative, drug_protein, drug_effect, protein_protein, disease_disease, bioprocess_protein, pathway_protein, treats, manifests_as, caused_by, biomarker_for, progresses_to, differentiates, onset_at]
+- subject_type: one of [disease, gene/protein, drug, phenotype, symptom, anatomy, pathway, biological_process, exposure]
+  (Use "symptom" for acute/presenting findings, e.g. "patient presents with"; use "phenotype" for chronic disease characteristics or HPO terms)
+- relation: one of [disease_protein, indication, contraindication, disease_phenotype_positive, disease_phenotype_negative, drug_protein, drug_effect, protein_protein, disease_disease, bioprocess_protein, pathway_protein, treats, manifests_as, caused_by, biomarker_for, progresses_to, differentiates, onset_at, differential_diagnosis, first_line_treatment, second_line_treatment, risk_factor_for, complication_of]
 - object: entity name
 - object_type: same types as subject_type
 - confidence: high, medium, or low
@@ -731,11 +732,20 @@ class KnowledgeExtractor(BaseAgent):
                 (f'Text: "Late-onset {disease_name} presents in the fourth to sixth decade"',
                  f'subject: "{disease_name}", relation: "onset_at", object: "late-onset presentation",\n'
                  '  temporal_context: {{onset_age_min: 30, onset_age_max: 60, progression_stage: "late-onset", temporal_qualifier: "fourth to sixth decade"}}'),
+                (f'Text: "ACE inhibitor is first-line therapy for {disease_name} per current guidelines"',
+                 f'subject: "ACE inhibitor", relation: "first_line_treatment", object: "{disease_name}",\n'
+                 '  temporal_context: {{discovery_year: 2018, temporal_qualifier: "current guidelines, first-line"}}'),
                 (f'Text: "Drug X was approved for {disease_name} in 2015"',
                  f'subject: "Drug X", relation: "treats", object: "{disease_name}",\n'
                  '  temporal_context: {{discovery_year: 2015, temporal_qualifier: "approved"}}'),
+                (f'Text: "{disease_name} must be distinguished from Disease Y in the differential"',
+                 f'subject: "{disease_name}", relation: "differential_diagnosis", object: "Disease Y",\n'
+                 '  temporal_context: {{temporal_qualifier: "differential diagnosis"}}'),
+                (f'Text: "Hypertension is a known risk factor for {disease_name}"',
+                 f'subject: "hypertension", relation: "risk_factor_for", object: "{disease_name}",\n'
+                 '  temporal_context: {{temporal_qualifier: "established risk factor"}}'),
                 (f'Text: "{disease_name} progresses to organ failure over 5-10 years"',
-                 f'subject: "{disease_name}", relation: "progresses_to", object: "organ failure",\n'
+                 f'subject: "{disease_name}", relation: "complication_of", object: "organ failure",\n'
                  '  temporal_context: {{duration: "5-10 years", milestone: "organ failure"}}'),
                 (f'Text: "Neonatal {disease_name} is the most severe form, presenting at birth"',
                  f'subject: "{disease_name}", relation: "onset_at", object: "neonatal presentation",\n'

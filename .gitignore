@@ -59,4 +59,7 @@ data_clean/
 
 .agents/
 
-CLAUDE.md
+CLAUDE.
+
+extracted/
+vector_store/

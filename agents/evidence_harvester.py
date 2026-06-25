@@ -28,6 +28,7 @@ from agents.base_agent import BaseAgent
 from core.credibility_scorer import CredibilityScorer
 from core.models import (
     AgentResult,
+    BioASQProfile,
     DiseaseProfile,
     EvidenceCollection,
     EvidenceTier,
@@ -557,11 +558,35 @@ class EvidenceHarvester(BaseAgent):
 
     async def run(self, input_data: dict) -> AgentResult:
         """
-        Collect all evidence for a disease.
+        Collect all evidence for a disease, or harvest BioASQ gold snippets.
 
-        input_data:
+        input_data (disease-driven mode):
             profile: DiseaseProfile (as dict)
+        input_data (BioASQ gold mode):
+            bioasq_profile: BioASQProfile (as dict)
         """
+        if "bioasq_profile" in input_data:
+            profile = BioASQProfile.from_dict(input_data["bioasq_profile"])
+            collection = EvidenceCollection(disease_id=f"BIOASQ:{profile.bioasq_id}")
+            start_time = time.monotonic()
+            self._harvest_from_bioasq_gold(profile, collection)
+            elapsed = time.monotonic() - start_time
+            collection.harvest_metrics = {
+                "elapsed_seconds": round(elapsed, 1),
+                "tier2_count": len(collection.tier2_documents),
+                "total_sources": collection.total_sources,
+                "mode": "gold_pmid",
+            }
+            status = "success" if collection.total_sources > 0 else "failed"
+            return AgentResult(
+                agent_name="EvidenceHarvester",
+                disease_id=f"BIOASQ:{profile.bioasq_id}",
+                status=status,
+                data={"collection_summary": collection.harvest_metrics, "mode": "gold_pmid"},
+                metrics=collection.harvest_metrics,
+                timestamp=datetime.utcnow(),
+            )
+
         profile = DiseaseProfile.from_dict(input_data["profile"])
         disease_id = profile.disease_id
 
@@ -818,6 +843,141 @@ class EvidenceHarvester(BaseAgent):
         if "review" in pub_types_lower:
             return StudyType.REVIEW
         return StudyType.OTHER
+
+    def _parse_article_metadata_only(self, article_elem) -> dict | None:
+        """Parse journal/date/pub_types from a PubmedArticle XML element.
+
+        Unlike _parse_article(), this skips both quality filters:
+        MIN_ABSTRACT_WORDS and EXCLUDED_PUB_TYPES. BioASQ gold PMIDs are
+        accepted as-is — we need their metadata for credibility_score even
+        if the article is a letter or has a short abstract.
+        """
+        medline = article_elem.find(".//MedlineCitation")
+        if medline is None:
+            return None
+        pmid = medline.findtext("PMID", "")
+        art = medline.find("Article")
+        if art is None:
+            return None
+
+        pub_types = [
+            (pt.text or "").lower()
+            for pt in art.findall(".//PublicationType")
+        ]
+        journal = art.findtext(".//Journal/Title", "")
+
+        pub_date = None
+        date_elem = art.find(".//ArticleDate")
+        if date_elem is None:
+            date_elem = medline.find(".//DateCompleted")
+        if date_elem is not None:
+            try:
+                year = int(date_elem.findtext("Year", "0"))
+                month = int(date_elem.findtext("Month", "1"))
+                day = int(date_elem.findtext("Day", "1"))
+                if year > 0:
+                    pub_date = date(year, min(month, 12), min(day, 28))
+            except (ValueError, TypeError):
+                pass
+
+        return {"pmid": pmid, "journal": journal, "publication_date": pub_date, "pub_types": pub_types}
+
+    def _harvest_from_bioasq_gold(self, profile: BioASQProfile,
+                                   collection: EvidenceCollection) -> None:
+        """Harvest evidence from BioASQ gold snippets.
+
+        Uses pre-computed pmids_with_snippet (Agent 1 already filtered):
+        - Fetches journal/date/pub_types via EFetch for credibility_score.
+        - Builds one SourceDocument per PMID from its BioASQ snippets.
+        - Skips pmids_missing_snippet (no text available, no point fetching).
+        """
+        pmids = profile.pmids_with_snippet
+        if not pmids:
+            self.logger.info("BioASQ %s: no PMIDs with snippets, nothing to harvest",
+                             profile.bioasq_id)
+            return
+
+        # Fetch metadata-only (no abstract quality filter) for credibility scoring
+        metadata: dict[str, dict] = {}
+        try:
+            webenv, query_key = self.pubmed._epost_pmids(pmids)
+            if webenv and query_key:
+                # Fetch XML, parse metadata-only (bypass abstract/pub_type filters)
+                import xml.etree.ElementTree as ET
+
+                def _do():
+                    handle = self.pubmed.Entrez.efetch(
+                        db="pubmed", query_key=query_key, WebEnv=webenv,
+                        retstart=0, retmax=len(pmids),
+                        rettype="xml", retmode="xml",
+                    )
+                    data = handle.read()
+                    handle.close()
+                    return data
+
+                xml_data = self.pubmed._retry(_do)
+                if xml_data:
+                    root = ET.fromstring(xml_data)
+                    for article in root.findall(".//PubmedArticle"):
+                        parsed = self._parse_article_metadata_only(article)
+                        if parsed and parsed["pmid"]:
+                            metadata[parsed["pmid"]] = parsed
+        except Exception as exc:
+            self.logger.warning("EFetch metadata for BioASQ %s failed: %s — continuing without metadata",
+                                profile.bioasq_id, exc)
+
+        if profile.pmids_missing_snippet:
+            self.logger.info("BioASQ %s: skipping %d PMIDs with no snippet: %s",
+                             profile.bioasq_id, len(profile.pmids_missing_snippet),
+                             profile.pmids_missing_snippet)
+
+        # Build snippet text per PMID and create SourceDocuments
+        for pmid in pmids:
+            matching_snippets = [
+                snip for snip in profile.snippets
+                if snip.get("document", "").rsplit("/", 1)[-1] == pmid
+            ]
+            if not matching_snippets:
+                continue
+
+            # Merge snippets by section, preserve section headers for readability
+            parts = []
+            seen_sections: set[str] = set()
+            for snip in matching_snippets:
+                section = snip.get("beginSection", "")
+                text = snip.get("text", "").strip()
+                if section and section not in seen_sections:
+                    parts.append(f"## {section}\n{text}")
+                    seen_sections.add(section)
+                else:
+                    parts.append(text)
+            combined_text = "\n\n".join(parts)
+
+            meta = metadata.get(pmid, {})
+            study_type = self._classify_study_type(meta.get("pub_types", []))
+            score, _ = self.scorer.compute(
+                journal_name=meta.get("journal"),
+                publication_date=meta.get("publication_date"),
+                citation_count=None,
+                study_type=study_type,
+                is_retracted=False,
+            )
+
+            doc = SourceDocument(
+                source_id=f"PMID:{pmid}",
+                source_type="bioasq_snippet",
+                tier=EvidenceTier.TIER_2,
+                title=f"BioASQ snippet from PMID:{pmid}",
+                text=combined_text,
+                publication_date=meta.get("publication_date"),
+                journal=meta.get("journal"),
+                credibility_score=score,
+                study_type=study_type,
+            )
+            collection.tier2_documents.append(doc)
+
+        self.logger.info("BioASQ %s: harvested %d Tier-2 docs from %d PMIDs with snippets",
+                         profile.bioasq_id, len(collection.tier2_documents), len(pmids))
 
     def _save_collection(self, collection: EvidenceCollection, cache_dir: Path) -> None:
         """Save evidence collection with FULL text for extraction pipeline."""
