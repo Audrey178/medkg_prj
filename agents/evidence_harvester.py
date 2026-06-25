@@ -1006,30 +1006,76 @@ class EvidenceHarvester(BaseAgent):
         # RuntimeError("Failed to parse the XML data") on older PMID records.
         metadata: dict[str, dict] = {}
         try:
+            import re as _re
             import xml.etree.ElementTree as ET
 
-            def _do_direct():
+            def _do_direct(id_list):
                 handle = self.pubmed.Entrez.efetch(
-                    db="pubmed", id=",".join(pmids),
+                    db="pubmed", id=",".join(id_list),
                     rettype="xml", retmode="xml",
                 )
                 data = handle.read()
                 handle.close()
                 return data
 
-            xml_data = self.pubmed._retry(_do_direct)
-            if xml_data:
-                # Normalise to bytes (same guard as _parse_pubmed_xml)
-                raw = xml_data if isinstance(xml_data, bytes) else xml_data.encode()
+            def _parse_xml_safe(raw: bytes) -> ET.Element | None:
+                """Parse PubMed XML with two-stage recovery for malformed responses.
+
+                Stage 1: parse as-is.
+                Stage 2: strip inline HTML tags (NCBI sometimes embeds <b>, <sup>, etc.
+                         inside AbstractText, causing 'mismatched tag' ParseError).
+                Returns root Element on success, None if both stages fail.
+                """
                 try:
-                    root = ET.fromstring(raw)
-                    for article in root.findall(".//PubmedArticle"):
-                        parsed = self._parse_article_metadata_only(article)
-                        if parsed and parsed["pmid"]:
-                            metadata[parsed["pmid"]] = parsed
-                except ET.ParseError as xml_err:
-                    self.logger.warning("BioASQ %s: XML parse error in EFetch response: %s",
-                                        profile.bioasq_id, xml_err)
+                    return ET.fromstring(raw)
+                except ET.ParseError:
+                    pass
+                # Stage 2: strip inline HTML before retrying
+                try:
+                    text = raw.decode("utf-8", errors="replace")
+                    # Remove HTML inline elements NCBI sometimes leaves unescaped
+                    text = _re.sub(
+                        r"</?(?:b|i|u|em|strong|sup|sub|br|p|span)(?:\s[^>]*)?>",
+                        "", text, flags=_re.IGNORECASE,
+                    )
+                    # Fix bare & not part of an XML entity
+                    text = _re.sub(r"&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[0-9a-fA-F]+);)",
+                                   "&amp;", text)
+                    return ET.fromstring(text.encode("utf-8"))
+                except ET.ParseError as e2:
+                    self.logger.debug("XML recovery failed: %s", e2)
+                    return None
+
+            def _collect_metadata(root: ET.Element) -> None:
+                for article in root.findall(".//PubmedArticle"):
+                    parsed = self._parse_article_metadata_only(article)
+                    if parsed and parsed["pmid"]:
+                        metadata[parsed["pmid"]] = parsed
+
+            # Attempt batch fetch first
+            xml_data = self.pubmed._retry(lambda: _do_direct(pmids))
+            if xml_data:
+                raw = xml_data if isinstance(xml_data, bytes) else xml_data.encode()
+                root = _parse_xml_safe(raw)
+                if root is not None:
+                    _collect_metadata(root)
+                else:
+                    # Batch XML unrecoverable — fall back to individual per-PMID fetches
+                    self.logger.info(
+                        "BioASQ %s: batch XML unrecoverable, falling back to %d individual fetches",
+                        profile.bioasq_id, len(pmids),
+                    )
+                    for pmid in pmids:
+                        try:
+                            single = self.pubmed._retry(lambda p=pmid: _do_direct([p]))
+                            if single:
+                                r = _parse_xml_safe(
+                                    single if isinstance(single, bytes) else single.encode()
+                                )
+                                if r is not None:
+                                    _collect_metadata(r)
+                        except Exception as e_single:
+                            self.logger.debug("PMID %s individual fetch failed: %s", pmid, e_single)
         except Exception as exc:
             self.logger.warning("EFetch metadata for BioASQ %s failed: %s — continuing without metadata",
                                 profile.bioasq_id, exc)
