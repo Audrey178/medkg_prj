@@ -294,18 +294,31 @@ class ConditionalContext:
     """
     Conditional context for an edge (inspired by AutoBioKG composite triples).
     Captures UNDER WHAT CONDITIONS a relationship holds.
+    Disease-mode fields (age_group … sex) and BioASQ molecular-context fields
+    (biological_context … species) coexist — unused fields stay None.
     """
+    # Disease-centric context
     age_group: Optional[str] = None        # pediatric | adult | elderly | all
     genetic_subtype: Optional[str] = None  # e.g., exon_deletion, missense
     disease_stage: Optional[str] = None    # e.g., ambulatory, non-ambulatory
     population: Optional[str] = None       # e.g., european, asian
     treatment_line: Optional[str] = None   # first-line | second-line | adjunct
     sex: Optional[str] = None              # male | female | all
+    # BioASQ / molecular-biology context
+    biological_context: Optional[str] = None   # e.g., "tumor microenvironment"
+    cell_type: Optional[str] = None            # e.g., "FDC-S", "epithelial cells"
+    tissue_type: Optional[str] = None          # e.g., "colon", "lung"
+    experimental_model: Optional[str] = None   # e.g., "in vitro", "RNA level"
+    species: Optional[str] = None             # e.g., "human", "mouse"
 
     def to_dict(self) -> dict:
         d = {}
-        for fld in ["age_group", "genetic_subtype", "disease_stage",
-                     "population", "treatment_line", "sex"]:
+        for fld in [
+            "age_group", "genetic_subtype", "disease_stage",
+            "population", "treatment_line", "sex",
+            "biological_context", "cell_type", "tissue_type",
+            "experimental_model", "species",
+        ]:
             val = getattr(self, fld)
             if val is not None:
                 d[fld] = val
@@ -585,6 +598,11 @@ class BioASQProfile:
     # Computed by Agent 1 to save Agent 2 the re-derivation work
     pmids_with_snippet: list[str] = field(default_factory=list)
     pmids_missing_snippet: list[str] = field(default_factory=list)
+    # Parsed topic entities (gene/protein names from UniProt concepts + question NER)
+    # Populated by Agent 1; consumed by Agent 2 (UniProt Tier 1) and Agent 3 (prompt)
+    topic_entities: list[str] = field(default_factory=list)
+    # UniProt entry names (e.g. "EGFR_HUMAN") for Agent 2 Tier-1 fetch
+    uniprot_entries: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -598,6 +616,8 @@ class BioASQProfile:
             "ideal_answer": self.ideal_answer,
             "pmids_with_snippet": self.pmids_with_snippet,
             "pmids_missing_snippet": self.pmids_missing_snippet,
+            "topic_entities": self.topic_entities,
+            "uniprot_entries": self.uniprot_entries,
         }
 
     @classmethod

@@ -121,6 +121,50 @@ class DiseaseProfiler(BaseAgent):
             timestamp=datetime.utcnow(),
         )
 
+    @staticmethod
+    def _parse_bioasq_topic_entities(concepts: list[str], question_body: str) -> tuple[list[str], list[str]]:
+        """
+        Parse topic entities and UniProt entry names from BioASQ concept URLs.
+
+        Returns (topic_entities, uniprot_entries):
+          - topic_entities: human-readable names, e.g. ["EGFR", "EGF"]
+          - uniprot_entries: UniProt entry names for Tier-1 fetch, e.g. ["EGFR_HUMAN"]
+
+        Strategy (in priority order):
+          1. UniProt URLs  → strip organism suffix → gene symbol  (most reliable)
+          2. Proper-noun regex on question_body                    (fallback)
+        """
+        import re as _re
+
+        topic_entities: list[str] = []
+        uniprot_entries: list[str] = []
+
+        for concept in concepts:
+            # UniProt: http://www.uniprot.org/uniprot/EGFR_HUMAN
+            m = _re.search(r'uniprot\.org/uniprot/([A-Z0-9]+(?:_[A-Z]+)?)', concept)
+            if m:
+                entry_name = m.group(1)          # e.g. "EGFR_HUMAN"
+                uniprot_entries.append(entry_name)
+                gene_sym = entry_name.split("_")[0]  # e.g. "EGFR"
+                if gene_sym not in topic_entities:
+                    topic_entities.append(gene_sym)
+
+        # Fallback: extract ALLCAPS tokens or CamelCase proper nouns from question body
+        # (catches questions where concepts only has GO/MeSH terms)
+        if not topic_entities:
+            # e.g. "Is the protein Papilin secreted?" → "Papilin"
+            # e.g. "Name synonym of Acrokeratosis paraneoplastica." → "Acrokeratosis paraneoplastica"
+            caps_tokens = _re.findall(r'\b[A-Z][A-Za-z0-9-]{2,}\b', question_body)
+            # Skip common sentence starters that are not entities
+            skip = {"Is", "Are", "Does", "What", "Which", "Where", "Name", "List",
+                    "How", "When", "Who", "The", "For", "Has", "Have", "Can"}
+            for tok in caps_tokens:
+                if tok not in skip and tok not in topic_entities:
+                    topic_entities.append(tok)
+            topic_entities = topic_entities[:5]  # cap at 5 to avoid noise
+
+        return topic_entities, list(dict.fromkeys(uniprot_entries))
+
     async def _run_bioasq_mode(self, input_data: dict) -> AgentResult:
         """Process a BioASQ Task B JSON file; return one BioASQProfile per question."""
         import json as _json
@@ -160,6 +204,11 @@ class DiseaseProfiler(BaseAgent):
                 if isinstance(ideal, str):
                     ideal = [ideal]
 
+                concepts = item.get("concepts", [])
+                topic_entities, uniprot_entries = self._parse_bioasq_topic_entities(
+                    concepts, item["body"]
+                )
+
                 profile = BioASQProfile(
                     bioasq_id=item["id"],
                     question_body=item["body"],
@@ -167,10 +216,12 @@ class DiseaseProfiler(BaseAgent):
                     pmids=pmids,
                     document_urls=list(item["documents"]),
                     snippets=item.get("snippets", []),
-                    concepts=item.get("concepts", []),
+                    concepts=concepts,
                     ideal_answer=ideal,
                     pmids_with_snippet=pmids_with_snippet,
                     pmids_missing_snippet=pmids_missing_snippet,
+                    topic_entities=topic_entities,
+                    uniprot_entries=uniprot_entries,
                 )
                 profiles.append(profile)
             except Exception as exc:

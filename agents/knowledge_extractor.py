@@ -26,6 +26,7 @@ from typing import Optional
 from agents.base_agent import BaseAgent
 from core.models import (
     AgentResult,
+    BioASQProfile,
     DiseaseProfile,
     EvidenceTier,
     ExtractionResult,
@@ -235,6 +236,120 @@ Return a JSON object with key "triples". Each object:
 Extract EVERY temporal fact exhaustively. Return: {{"triples": [...]}}"""
 
 
+# ---------------------------------------------------------------------------
+# BioASQ-mode extraction — replaces the disease prompt when input is a
+# BioASQProfile instead of a DiseaseProfile.
+#
+# Design principles vs. disease mode:
+#   • No question body in the prompt (avoids relation noise from question phrasing)
+#   • ideal_answer acts as knowledge anchor → guides both models to same entities
+#   • topic_entities replace disease_name as the focal point
+#   • temporal_context is OPTIONAL (most BioASQ facts are atemporal)
+#   • conditions extended with molecular context (biological_context, cell_type, …)
+#   • Relation vocab is narrowed per question type to boost cross-model consensus
+# ---------------------------------------------------------------------------
+
+BIOASQ_EXTRACTION_PROMPT = """You are a biomedical knowledge extraction system.
+
+## Known facts about this topic (verified knowledge — use as anchor)
+{ideal_answer}
+
+## Your extraction task
+{type_instruction}
+
+Extract triples that are DIRECTLY SUPPORTED by the source text below.
+Every triple MUST quote the supporting text in evidence_text.
+
+## Topic entities — these MUST appear as subject OR object in every triple
+{topic_entities}
+
+## Relation vocabulary — use ONLY these relations
+{relation_vocab}
+
+## Output format — return a JSON object {{"triples": [...]}}
+Each triple must have:
+- subject: exact canonical entity name (no paraphrasing)
+- subject_type: gene/protein | drug | disease | anatomy | pathway | biological_process | exposure
+- relation: from the vocabulary above
+- object: exact canonical entity name
+- object_type: same types as subject_type
+- confidence: 0.0–1.0 (float)
+- evidence_text: exact verbatim quote from the text below (max 150 chars)
+- temporal_context: null or object with any of:
+    onset_age_min, onset_age_max, progression_stage, duration,
+    discovery_year, milestone, treatment_start_age, temporal_qualifier
+- conditions: null or object capturing UNDER WHAT CONDITIONS this relation holds:
+    age_group (pediatric|adult|elderly),
+    disease_stage, genetic_subtype, treatment_line, sex,
+    biological_context (e.g. "tumor microenvironment"),
+    cell_type (e.g. "FDC-S", "epithelial cells"),
+    tissue_type (e.g. "colon", "lung"),
+    experimental_model (e.g. "in vitro", "RNA level"),
+    species (e.g. "human", "mouse")
+
+## Critical rules
+1. Every topic entity that appears in the text should generate at least one triple
+2. Do NOT use long descriptive phrases as subject/object — use canonical short names
+3. Do NOT invent facts not present in the source text
+4. conditions must capture any contextual qualifier mentioned in the text
+   (e.g. "produced in the tumor microenvironment" → biological_context: "tumor microenvironment")
+
+## Source text (PMID: {source_id})
+{snippet_text}
+
+Return {{"triples": [...]}}"""
+
+
+# Per question-type extraction goal instruction
+BIOASQ_TYPE_INSTRUCTIONS: dict[str, str] = {
+    "list": (
+        "COMPLETENESS IS CRITICAL. Extract ALL individual entities mentioned in the text "
+        "that belong to the set described in 'Known facts' above. "
+        "Each entity should be a SEPARATE triple. "
+        "Every topic entity from the known facts that appears in the text must be extracted."
+    ),
+    "factoid": (
+        "Extract the single most specific factual relationship that answers the topic. "
+        "Return 1–3 triples maximum. Highest confidence only."
+    ),
+    "yesno": (
+        "Extract evidence from the text that supports or contradicts the claim in 'Known facts'. "
+        "Set conditions.biological_context or other conditions fields to capture "
+        "any qualifier that limits when the claim holds."
+    ),
+    "summary": (
+        "Extract ALL key relationships about the topic entities. "
+        "Breadth first — capture every distinct fact mentioned. No limit on triple count."
+    ),
+}
+
+# Narrowed relation vocabulary per question type — reduces cross-model divergence
+BIOASQ_RELATION_VOCAB: dict[str, list[str]] = {
+    "list": [
+        "protein_protein", "interacts_with",
+        "disease_protein", "treats", "indication",
+        "biomarker_for", "is_member_of", "encoded_by", "regulates",
+    ],
+    "factoid": [
+        "synonym_of", "located_at", "has_property",
+        "indication", "disease_protein", "caused_by", "encoded_by",
+        "protein_protein", "interacts_with",
+    ],
+    "yesno": [
+        "has_property", "interacts_with", "regulates",
+        "expressed_in", "protein_protein", "disease_protein",
+        "anatomy_protein_expressed", "anatomy_protein_absent",
+    ],
+    "summary": [
+        "disease_protein", "protein_protein", "interacts_with",
+        "treats", "indication", "contraindication",
+        "disease_phenotype_positive", "caused_by", "biomarker_for",
+        "progresses_to", "regulates", "located_at", "is_member_of",
+        "synonym_of", "has_property", "expressed_in", "encoded_by",
+    ],
+}
+
+
 class LLMClient:
     """Unified interface for multi-LLM extraction."""
 
@@ -438,10 +553,16 @@ class KnowledgeExtractor(BaseAgent):
         """
         Extract triples from evidence collection.
 
-        input_data:
+        input_data (disease mode):
             profile: DiseaseProfile dict
             documents: list of SourceDocument dicts
+        input_data (BioASQ mode):
+            bioasq_profile: BioASQProfile dict
+            documents: list of SourceDocument dicts
         """
+        if "bioasq_profile" in input_data:
+            return await self._run_bioasq(input_data)
+
         profile = DiseaseProfile.from_dict(input_data["profile"])
         documents = input_data.get("documents", [])
 
@@ -592,6 +713,165 @@ class KnowledgeExtractor(BaseAgent):
             },
             metrics={**result.extraction_metrics, **result.model_agreement_stats},
             timestamp=datetime.utcnow(),
+        )
+
+    async def _run_bioasq(self, input_data: dict) -> AgentResult:
+        """BioASQ extraction mode: uses BIOASQ_EXTRACTION_PROMPT with ideal_answer anchor."""
+        bioasq_profile = BioASQProfile.from_dict(input_data["bioasq_profile"])
+        documents = input_data.get("documents", [])
+
+        disease_id = f"BIOASQ:{bioasq_profile.bioasq_id}"
+        self.logger.info(
+            "BioASQ extraction: %s | type=%s | topic_entities=%s | docs=%d",
+            bioasq_profile.bioasq_id,
+            bioasq_profile.question_type,
+            bioasq_profile.topic_entities,
+            len(documents),
+        )
+
+        result = ExtractionResult(disease_id=disease_id)
+        start_time = time.monotonic()
+
+        for i, doc_data in enumerate(documents):
+            if isinstance(doc_data, dict):
+                valid_fields = {f.name for f in SourceDocument.__dataclass_fields__.values()}
+                filtered = {k: v for k, v in doc_data.items() if k in valid_fields}
+                if "tier" in filtered and isinstance(filtered["tier"], int):
+                    filtered["tier"] = EvidenceTier(filtered["tier"])
+                if "study_type" in filtered and isinstance(filtered["study_type"], str):
+                    try:
+                        filtered["study_type"] = StudyType(filtered["study_type"])
+                    except ValueError:
+                        filtered["study_type"] = None
+                if "sections" in filtered and isinstance(filtered["sections"], list):
+                    filtered["sections"] = None
+                if "publication_date" in filtered and isinstance(filtered["publication_date"], str):
+                    from datetime import date as date_cls
+                    try:
+                        filtered["publication_date"] = date_cls.fromisoformat(filtered["publication_date"])
+                    except (ValueError, TypeError):
+                        filtered["publication_date"] = None
+                doc = SourceDocument(**filtered)
+            else:
+                doc = doc_data
+
+            self.logger.info("  BioASQ doc %d/%d: %s (%s)",
+                             i + 1, len(documents), doc.source_id, doc.source_type)
+
+            prompt = self._build_bioasq_prompt(bioasq_profile, doc)
+
+            # Same cascading consensus as disease mode
+            per_model_triples: dict[str, list[RawTriple]] = {}
+
+            async def _extract_one(model_name):
+                raw = await self.llm.extract_async(model_name, prompt)
+                parsed = [self._parse_triple(t, doc, model_name) for t in raw]
+                return model_name, [t for t in parsed if t is not None]
+
+            primary_pair = []
+            if "deepseek-v4" in self.llm.available_models:
+                primary_pair.append("deepseek-v4")
+            if "gpt-4.1-nano" in self.llm.available_models:
+                primary_pair.append("gpt-4.1-nano")
+            elif "gpt-4o-mini" in self.llm.available_models:
+                primary_pair.append("gpt-4o-mini")
+
+            tasks = [_extract_one(m) for m in primary_pair]
+            model_results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            for mr in model_results:
+                if isinstance(mr, Exception):
+                    self.logger.error("    LLM extraction error: %s", mr)
+                    continue
+                model_name, parsed = mr
+                per_model_triples[model_name] = parsed
+                result.raw_triples.extend(parsed)
+                self.logger.info("    %s: %d triples", model_name, len(parsed))
+
+            # Tiebreaker if needed
+            need_tiebreaker = True
+            if len(per_model_triples) == 2:
+                models = list(per_model_triples.keys())
+                count_a = len(per_model_triples[models[0]])
+                count_b = len(per_model_triples[models[1]])
+                if count_a > 0 and count_b > 0:
+                    ratio = max(count_a, count_b) / max(1, min(count_a, count_b))
+                    if ratio <= 5:
+                        need_tiebreaker = False
+
+            if need_tiebreaker and "claude-haiku" in self.llm.available_models:
+                try:
+                    claude_name, claude_parsed = await _extract_one("claude-haiku")
+                    per_model_triples[claude_name] = claude_parsed
+                    result.raw_triples.extend(claude_parsed)
+                    self.logger.info("    claude-haiku (tiebreaker): %d triples", len(claude_parsed))
+                except Exception as e:
+                    self.logger.error("    Claude tiebreaker failed: %s", e)
+
+            consensus = self._compute_consensus(per_model_triples)
+            result.consensus_triples.extend(consensus)
+
+        self._normalize_triples(result.consensus_triples)
+        elapsed = time.monotonic() - start_time
+
+        result.model_agreement_stats = {
+            "total_raw": len(result.raw_triples),
+            "total_consensus": len(result.consensus_triples),
+            "consensus_rate": len(result.consensus_triples) / max(1, len(result.raw_triples)),
+            "models_used": list(
+                {t.extraction_model for t in result.raw_triples}
+            ),
+        }
+        result.extraction_metrics = {
+            "elapsed_seconds": round(elapsed, 1),
+            "documents_processed": len(documents),
+        }
+
+        cache_dir = self._cache_dir / disease_id.replace(":", "_")
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        self._save_results(result, cache_dir)
+
+        return AgentResult(
+            agent_name="KnowledgeExtractor",
+            disease_id=disease_id,
+            status="success" if result.consensus_triples else "partial",
+            data={
+                "raw_count": len(result.raw_triples),
+                "consensus_count": len(result.consensus_triples),
+            },
+            metrics={**result.extraction_metrics, **result.model_agreement_stats},
+            timestamp=datetime.utcnow(),
+        )
+
+    def _build_bioasq_prompt(self, profile: BioASQProfile, doc: SourceDocument) -> str:
+        """Build BioASQ extraction prompt: ideal_answer anchor + type-specific instruction."""
+        # Truncate snippet text (BioASQ snippets are short, but UniProt Tier-1 may be longer)
+        max_chars = 8000 if doc.source_type == "uniprot" else 4000
+        snippet_text = doc.text[:max_chars]
+        if len(doc.text) > max_chars:
+            snippet_text += "\n[... truncated ...]"
+
+        ideal_answer = (
+            profile.ideal_answer[0] if profile.ideal_answer else "(not available)"
+        )
+        question_type = profile.question_type or "summary"
+        type_instruction = BIOASQ_TYPE_INSTRUCTIONS.get(
+            question_type, BIOASQ_TYPE_INSTRUCTIONS["summary"]
+        )
+        relation_vocab = "\n".join(
+            f"  - {r}" for r in BIOASQ_RELATION_VOCAB.get(question_type, BIOASQ_RELATION_VOCAB["summary"])
+        )
+        topic_entities_str = (
+            ", ".join(profile.topic_entities) if profile.topic_entities else "(see Known facts above)"
+        )
+
+        return BIOASQ_EXTRACTION_PROMPT.format(
+            ideal_answer=ideal_answer,
+            type_instruction=type_instruction,
+            topic_entities=topic_entities_str,
+            relation_vocab=relation_vocab,
+            source_id=doc.source_id,
+            snippet_text=snippet_text,
         )
 
     def _build_prompt(self, profile: DiseaseProfile, doc: SourceDocument) -> str:
@@ -969,6 +1249,26 @@ class KnowledgeExtractor(BaseAgent):
                         "avoid_in", "not_recommended"],
             "exposure_disease": ["exposure_disease", "risk_factor", "risk_factor_for",
                         "environmental_cause", "trigger", "precipitant"],
+            # BioASQ molecular relations — map to nearest PrimeKG canonical
+            "protein_protein": ["protein_protein", "interacts_with", "binds_to",
+                        "activates", "ligand_of", "receptor_for", "binding_partner",
+                        "physically_interacts_with"],
+            "anatomy_protein_expressed": ["expressed_in", "anatomy_protein_expressed",
+                        "produced_in", "secreted_by", "synthesized_in"],
+            "anatomy_protein_absent": ["anatomy_protein_absent", "not_expressed_in",
+                        "absent_in_tissue"],
+            # BioASQ factoid relations — no good PrimeKG canonical, keep as-is
+            "synonym_of": ["synonym_of", "also_known_as", "alternative_name",
+                        "named_after", "abbreviated_as"],
+            "located_at": ["located_at", "found_at", "resides_in", "localizes_to",
+                        "subcellular_localization"],
+            "has_property": ["has_property", "is_property_of", "characterized_by_property",
+                        "has_characteristic", "is_a_type_of"],
+            "is_member_of": ["is_member_of", "belongs_to", "member_of",
+                        "part_of_family", "classified_as"],
+            "encoded_by": ["encoded_by", "gene_product_of", "translated_from"],
+            "regulates": ["regulates", "controls", "modulates", "upregulates",
+                        "downregulates", "inhibits", "activates_expression"],
         }
 
         for canonical, variants in synonyms.items():

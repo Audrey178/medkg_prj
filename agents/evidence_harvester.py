@@ -569,20 +569,28 @@ class EvidenceHarvester(BaseAgent):
             profile = BioASQProfile.from_dict(input_data["bioasq_profile"])
             collection = EvidenceCollection(disease_id=f"BIOASQ:{profile.bioasq_id}")
             start_time = time.monotonic()
+            # Tier 1: UniProt entity summaries (background knowledge for each topic entity)
+            self._harvest_tier1_bioasq(profile, collection)
+            # Tier 2: BioASQ gold snippets (question-specific evidence)
             self._harvest_from_bioasq_gold(profile, collection)
             elapsed = time.monotonic() - start_time
             collection.harvest_metrics = {
                 "elapsed_seconds": round(elapsed, 1),
+                "tier1_count": len(collection.tier1_documents),
                 "tier2_count": len(collection.tier2_documents),
                 "total_sources": collection.total_sources,
-                "mode": "gold_pmid",
+                "mode": "bioasq_gold",
             }
+            # Save to cache so KnowledgeExtractor can load it
+            cache_dir = self._cache_dir / f"BIOASQ_{profile.bioasq_id}".replace(":", "_")
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            self._save_collection(collection, cache_dir)
             status = "success" if collection.total_sources > 0 else "failed"
             return AgentResult(
                 agent_name="EvidenceHarvester",
                 disease_id=f"BIOASQ:{profile.bioasq_id}",
                 status=status,
-                data={"collection_summary": collection.harvest_metrics, "mode": "gold_pmid"},
+                data={"collection_summary": collection.harvest_metrics, "mode": "bioasq_gold"},
                 metrics=collection.harvest_metrics,
                 timestamp=datetime.utcnow(),
             )
@@ -881,6 +889,101 @@ class EvidenceHarvester(BaseAgent):
                 pass
 
         return {"pmid": pmid, "journal": journal, "publication_date": pub_date, "pub_types": pub_types}
+
+    def _fetch_uniprot_summary(self, entry_name: str) -> dict | None:
+        """
+        Fetch UniProt functional summary for a protein entry (no API key required).
+
+        Uses the UniProt REST API:
+          GET https://rest.uniprot.org/uniprotkb/{entry_name}.json
+        Returns a dict with keys: gene_symbol, protein_name, function_text, accession.
+        Returns None on network error or if the entry has no FUNCTION comment.
+        """
+        import urllib.request
+        import urllib.error
+
+        url = f"https://rest.uniprot.org/uniprotkb/{entry_name}.json"
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                data = json.loads(resp.read())
+        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError) as exc:
+            self.logger.debug("UniProt fetch failed for %s: %s", entry_name, exc)
+            return None
+
+        # Gene symbol
+        gene_sym = entry_name.split("_")[0]
+        genes = data.get("genes", [])
+        if genes and genes[0].get("geneName"):
+            gene_sym = genes[0]["geneName"].get("value", gene_sym)
+
+        # Protein name
+        protein_name = gene_sym
+        prot_desc = data.get("proteinDescription", {})
+        rec_name = prot_desc.get("recommendedName", {})
+        if rec_name.get("fullName"):
+            protein_name = rec_name["fullName"].get("value", protein_name)
+
+        # FUNCTION comment — the key knowledge for Tier 1
+        function_texts = []
+        for comment in data.get("comments", []):
+            if comment.get("commentType") == "FUNCTION":
+                for text_obj in comment.get("texts", []):
+                    val = text_obj.get("value", "")
+                    if val:
+                        function_texts.append(val)
+
+        if not function_texts:
+            return None
+
+        return {
+            "accession": data.get("primaryAccession", entry_name),
+            "gene_symbol": gene_sym,
+            "protein_name": protein_name,
+            "function_text": "\n".join(function_texts),
+        }
+
+    def _harvest_tier1_bioasq(self, profile: BioASQProfile,
+                               collection: EvidenceCollection) -> None:
+        """
+        Fetch UniProt Tier-1 functional summaries for topic entities in BioASQ profile.
+
+        One SourceDocument per UniProt entry — contains the protein's functional
+        annotation text, which gives the LLM background knowledge about the entity
+        before it reads the PubMed snippets. Treated as Tier 1 (DATABASE credibility).
+        """
+        if not profile.uniprot_entries:
+            self.logger.info("BioASQ %s: no UniProt entries to fetch for Tier-1",
+                             profile.bioasq_id)
+            return
+
+        fetched = 0
+        for entry_name in profile.uniprot_entries:
+            self.logger.info("  UniProt Tier-1: fetching %s", entry_name)
+            data = self._fetch_uniprot_summary(entry_name)
+            if not data:
+                self.logger.debug("  UniProt: no FUNCTION text for %s, skipping", entry_name)
+                continue
+
+            score, _ = self.scorer.score_tier1_source("uniprot")
+            doc = SourceDocument(
+                source_id=f"UniProt:{data['accession']}",
+                source_type="uniprot",
+                tier=EvidenceTier.TIER_1,
+                title=f"{data['protein_name']} ({data['gene_symbol']}) — UniProt",
+                text=(
+                    f"Gene: {data['gene_symbol']}\n"
+                    f"Protein: {data['protein_name']}\n\n"
+                    f"## Function\n{data['function_text']}"
+                ),
+                credibility_score=score,
+                study_type=StudyType.DATABASE,
+            )
+            collection.tier1_documents.append(doc)
+            fetched += 1
+
+        self.logger.info("BioASQ %s: fetched %d/%d UniProt Tier-1 entries",
+                         profile.bioasq_id, fetched, len(profile.uniprot_entries))
 
     def _harvest_from_bioasq_gold(self, profile: BioASQProfile,
                                    collection: EvidenceCollection) -> None:
