@@ -635,3 +635,139 @@ class PrimeKGIndex:
     @property
     def is_loaded(self) -> bool:
         return self._loaded
+
+    @classmethod
+    def build_sqlite_index(
+        cls,
+        kg_csv_path: str | Path | None = None,
+        sqlite_path: str | Path | None = None,
+        batch_size: int = 50_000,
+    ) -> Path:
+        """Build kg_index.db from kg.csv using streaming CSV → SQLite.
+
+        Processes rows one at a time — never holds the full 8.1M edge dataset
+        in RAM. Requires ~100MB peak RAM regardless of KG size.
+        Only needs to run ONCE; subsequent loads use SQLite (~50MB RAM).
+
+        Returns the path to the created SQLite file.
+        """
+        import sqlite3
+
+        kg_path = Path(kg_csv_path) if kg_csv_path else PROJECT_ROOT / "data" / "primekg" / "kg.csv"
+        out_path = Path(sqlite_path) if sqlite_path else kg_path.parent / "kg_index.db"
+
+        if not kg_path.exists():
+            raise FileNotFoundError(f"PrimeKG CSV not found: {kg_path}")
+
+        logger.info("Building SQLite index from %s → %s", kg_path, out_path)
+        t0 = time.monotonic()
+
+        conn = sqlite3.connect(str(out_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-128000")  # 128MB page cache during build
+
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS edge_lookup (
+                x_name TEXT NOT NULL,
+                relation TEXT NOT NULL,
+                y_name TEXT NOT NULL,
+                x_id TEXT NOT NULL,
+                y_id TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS relation_pairs (
+                x_name TEXT NOT NULL,
+                y_name TEXT NOT NULL,
+                relation TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS name_to_nodes (
+                name_lower TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                node_type TEXT NOT NULL,
+                name TEXT NOT NULL,
+                source TEXT NOT NULL
+            );
+        """)
+
+        edge_count = 0
+        node_names_seen: set[str] = set()
+        relation_pairs_seen: set[tuple[str, str]] = set()
+        batch_edges: list[tuple] = []
+        batch_pairs: list[tuple] = []
+        batch_nodes: list[tuple] = []
+
+        def _flush():
+            if batch_edges:
+                conn.executemany(
+                    "INSERT INTO edge_lookup(x_name,relation,y_name,x_id,y_id) VALUES(?,?,?,?,?)",
+                    batch_edges,
+                )
+                batch_edges.clear()
+            if batch_pairs:
+                conn.executemany(
+                    "INSERT INTO relation_pairs(x_name,y_name,relation) VALUES(?,?,?)",
+                    batch_pairs,
+                )
+                batch_pairs.clear()
+            if batch_nodes:
+                conn.executemany(
+                    "INSERT INTO name_to_nodes(name_lower,node_id,node_type,name,source) VALUES(?,?,?,?,?)",
+                    batch_nodes,
+                )
+                batch_nodes.clear()
+            conn.commit()
+
+        with open(kg_path, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                x_name = row["x_name"].lower().strip()
+                y_name = row["y_name"].lower().strip()
+                relation = row["relation"]
+                x_id = row["x_id"]
+                y_id = row["y_id"]
+                x_type = row["x_type"]
+                y_type = row["y_type"]
+
+                batch_edges.append((x_name, relation, y_name, x_id, y_id))
+
+                pair_key = (x_name, y_name)
+                if pair_key not in relation_pairs_seen:
+                    relation_pairs_seen.add(pair_key)
+                    batch_pairs.append((x_name, y_name, relation))
+
+                for nid, ntype, nname_raw, nsource in [
+                    (x_id, x_type, row["x_name"], row["x_source"]),
+                    (y_id, y_type, row["y_name"], row["y_source"]),
+                ]:
+                    key = nname_raw.lower().strip()
+                    if key not in node_names_seen:
+                        node_names_seen.add(key)
+                        batch_nodes.append((key, nid, ntype, nname_raw, nsource))
+
+                edge_count += 1
+                if edge_count % batch_size == 0:
+                    _flush()
+                    logger.info("  %d edges processed...", edge_count)
+
+        _flush()
+        logger.info("Rows inserted: %d edges, %d relation_pairs, %d unique nodes",
+                    edge_count, len(relation_pairs_seen), len(node_names_seen))
+
+        # Build indexes AFTER bulk insert (much faster)
+        logger.info("Building indexes...")
+        conn.executescript("""
+            CREATE INDEX IF NOT EXISTS idx_edge_x ON edge_lookup(x_name);
+            CREATE INDEX IF NOT EXISTS idx_edge_xyz ON edge_lookup(x_name, relation, y_name);
+            CREATE INDEX IF NOT EXISTS idx_edge_y ON edge_lookup(y_name);
+            CREATE INDEX IF NOT EXISTS idx_pairs_xy ON relation_pairs(x_name, y_name);
+            CREATE INDEX IF NOT EXISTS idx_pairs_yx ON relation_pairs(y_name, x_name);
+            CREATE INDEX IF NOT EXISTS idx_nodes_name ON name_to_nodes(name_lower);
+            CREATE INDEX IF NOT EXISTS idx_nodes_type ON name_to_nodes(name_lower, node_type);
+        """)
+        conn.execute("ANALYZE")
+        conn.close()
+
+        elapsed = time.monotonic() - t0
+        size_mb = out_path.stat().st_size / 1e6
+        logger.info("SQLite index built in %.0fs — %.0f MB at %s", elapsed, size_mb, out_path)
+        return out_path

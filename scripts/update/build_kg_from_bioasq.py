@@ -648,6 +648,10 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=1,
                         help="Parallel workers (real-time mode only, default: 1)")
     parser.add_argument("--max-docs", type=int, default=200)
+    parser.add_argument("--skip-primekg", action="store_true",
+                        help="Skip PrimeKG loading (no schema alignment/confirmation). "
+                             "Use when kg_index.db not yet built and RAM < 8GB. "
+                             "Run scripts/update/build_primekg_sqlite.py first, then remove this flag.")
 
     # Batch mode
     parser.add_argument("--batch", action="store_true",
@@ -703,8 +707,26 @@ def main() -> None:
     else:
         profiles = []  # Not needed for --retrieve mode
 
-    logger.info("Loading PrimeKG index...")
-    primekg_index = PrimeKGIndex()
+    if args.skip_primekg:
+        logger.warning("--skip-primekg: PrimeKG NOT loaded. QC will skip schema alignment.")
+        logger.warning("  Run 'python scripts/update/build_primekg_sqlite.py' to fix this.")
+        primekg_index = PrimeKGIndex.__new__(PrimeKGIndex)
+        primekg_index.__dict__.update({
+            "kg_path": Path(""),
+            "name_to_nodes": {},
+            "disease_edges": {},
+            "edge_lookup": {},
+            "relation_pairs": {},
+            "disease_nodes": {},
+            "_edge_lookup_lite": {},
+            "_lite_mode": True,
+            "_sqlite_mode": False,
+            "_db": None,
+            "_loaded": True,   # mark loaded so QC doesn't try to load
+        })
+    else:
+        logger.info("Loading PrimeKG index...")
+        primekg_index = PrimeKGIndex()
 
     start = time.monotonic()
 
