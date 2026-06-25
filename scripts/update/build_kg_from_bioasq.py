@@ -167,17 +167,28 @@ def _harvest_profile(
     bioasq_profile: BioASQProfile,
     harvester: EvidenceHarvester,
 ) -> tuple[EvidenceCollection, list[dict]]:
-    """Run Agent 2 for one BioASQProfile. Returns (collection, doc_dicts)."""
+    """Run Agent 2 for one BioASQProfile. Returns (collection, doc_dicts).
+
+    Tier 1: UniProt entity summaries (background knowledge per topic entity).
+    Tier 2: BioASQ gold snippets (question-specific evidence from PubMed).
+    Both tiers are passed to the extractor — Tier 1 first so the LLM has
+    entity context before reading the snippets.
+    """
     disease_id = f"BIOASQ:{bioasq_profile.bioasq_id}"
     collection = EvidenceCollection(disease_id=disease_id)
+    harvester._harvest_tier1_bioasq(bioasq_profile, collection)
     harvester._harvest_from_bioasq_gold(bioasq_profile, collection)
 
     cache_dir = OUTPUT_DIR / disease_id.replace(":", "_")
     cache_dir.mkdir(parents=True, exist_ok=True)
-    if collection.tier2_documents:
+    if collection.total_sources:
         _save_collection_to_cache(collection, cache_dir)
 
-    docs = [_full_doc_to_dict(d) for d in collection.tier2_documents]
+    # Tier 1 first so extractor sees background knowledge before snippets
+    docs = (
+        [_full_doc_to_dict(d) for d in collection.tier1_documents]
+        + [_full_doc_to_dict(d) for d in collection.tier2_documents]
+    )
     return collection, docs
 
 
@@ -215,7 +226,7 @@ async def run_single_realtime(
 
     try:
         adapter_profile = _make_adapter_profile(bioasq_profile)
-        _, documents = _harvest_profile(bioasq_profile, harvester)
+        collection, documents = _harvest_profile(bioasq_profile, harvester)
 
         if not documents:
             result["status"] = "partial"
@@ -224,11 +235,16 @@ async def run_single_realtime(
 
         result["agents"]["harvester"] = {
             "status": "success",
-            "metrics": {"tier2_count": len(documents)},
+            "metrics": {
+                "tier1_count": len(collection.tier1_documents),
+                "tier2_count": len(collection.tier2_documents),
+            },
         }
 
+        # Use bioasq_profile (not adapter_profile) so KnowledgeExtractor picks up
+        # BIOASQ_EXTRACTION_PROMPT with ideal_answer anchor + topic_entities
         extractor_result = await extractor.run_with_retry({
-            "profile": adapter_profile,
+            "bioasq_profile": bioasq_profile.to_dict(),
             "documents": documents,
         })
         result["agents"]["extractor"] = {
@@ -409,9 +425,9 @@ async def _run_batch_mode(
                 continue
 
             adapter = _make_adapter_profile(p)
-            dp = DiseaseProfile.from_dict(dict(adapter))  # copy to avoid from_dict mutation
             source_docs = [_reconstruct_source_doc(d) for d in doc_dicts]
-            prompts = [(extractor._build_prompt(dp, doc), doc)
+            # Use BioASQ prompt (ideal_answer anchor) instead of disease prompt
+            prompts = [(extractor._build_bioasq_prompt(p, doc), doc)
                        for doc in source_docs]
 
             prepared.append({
@@ -419,7 +435,8 @@ async def _run_batch_mode(
                 "disease_id": disease_id,
                 "question_type": p.question_type,
                 "adapter_profile": adapter,
-                "prompts": prompts,           # list[(prompt_str, SourceDocument)]
+                "bioasq_profile_dict": p.to_dict(),   # stored for --retrieve rebuild
+                "prompts": prompts,                    # list[(prompt_str, SourceDocument)]
                 "doc_dicts": doc_dicts,
             })
             logger.info("  → %d docs, %d prompts", len(doc_dicts), len(prompts))
@@ -471,6 +488,7 @@ async def _run_batch_mode(
                     "disease_id": item["disease_id"],
                     "question_type": item["question_type"],
                     "adapter_profile": item["adapter_profile"],
+                    "bioasq_profile_dict": item.get("bioasq_profile_dict"),
                     "doc_dicts": item["doc_dicts"],
                 }
                 for item in prepared
@@ -497,12 +515,18 @@ async def _run_batch_mode(
         batch_ts = meta["batch_ts"]
 
         # Reconstruct prepared (without prompts — will rebuild from doc_dicts)
-        from core.models import DiseaseProfile, SourceDocument
         prepared = []
         for item in meta["prepared"]:
-            dp = DiseaseProfile.from_dict(dict(item["adapter_profile"]))
             source_docs = [_reconstruct_source_doc(d) for d in item["doc_dicts"]]
-            prompts = [(extractor._build_prompt(dp, doc), doc) for doc in source_docs]
+            # Prefer BioASQ prompt if profile dict was saved; fall back to disease prompt
+            if "bioasq_profile_dict" in item:
+                bp = BioASQProfile.from_dict(item["bioasq_profile_dict"])
+                prompts = [(extractor._build_bioasq_prompt(bp, doc), doc)
+                           for doc in source_docs]
+            else:
+                from core.models import DiseaseProfile
+                dp = DiseaseProfile.from_dict(dict(item["adapter_profile"]))
+                prompts = [(extractor._build_prompt(dp, doc), doc) for doc in source_docs]
             prepared.append({
                 **item,
                 "prompts": prompts,
