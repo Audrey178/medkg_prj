@@ -897,31 +897,36 @@ class EvidenceHarvester(BaseAgent):
                              profile.bioasq_id)
             return
 
-        # Fetch metadata-only (no abstract quality filter) for credibility scoring
+        # Fetch metadata-only (no abstract quality filter) for credibility scoring.
+        # Uses direct ID fetch (not EPost+WebEnv) — more reliable for small batches
+        # and avoids the Biopython WebEnv XML validation bug that raises
+        # RuntimeError("Failed to parse the XML data") on older PMID records.
         metadata: dict[str, dict] = {}
         try:
-            webenv, query_key = self.pubmed._epost_pmids(pmids)
-            if webenv and query_key:
-                # Fetch XML, parse metadata-only (bypass abstract/pub_type filters)
-                import xml.etree.ElementTree as ET
+            import xml.etree.ElementTree as ET
 
-                def _do():
-                    handle = self.pubmed.Entrez.efetch(
-                        db="pubmed", query_key=query_key, WebEnv=webenv,
-                        retstart=0, retmax=len(pmids),
-                        rettype="xml", retmode="xml",
-                    )
-                    data = handle.read()
-                    handle.close()
-                    return data
+            def _do_direct():
+                handle = self.pubmed.Entrez.efetch(
+                    db="pubmed", id=",".join(pmids),
+                    rettype="xml", retmode="xml",
+                )
+                data = handle.read()
+                handle.close()
+                return data
 
-                xml_data = self.pubmed._retry(_do)
-                if xml_data:
-                    root = ET.fromstring(xml_data)
+            xml_data = self.pubmed._retry(_do_direct)
+            if xml_data:
+                # Normalise to bytes (same guard as _parse_pubmed_xml)
+                raw = xml_data if isinstance(xml_data, bytes) else xml_data.encode()
+                try:
+                    root = ET.fromstring(raw)
                     for article in root.findall(".//PubmedArticle"):
                         parsed = self._parse_article_metadata_only(article)
                         if parsed and parsed["pmid"]:
                             metadata[parsed["pmid"]] = parsed
+                except ET.ParseError as xml_err:
+                    self.logger.warning("BioASQ %s: XML parse error in EFetch response: %s",
+                                        profile.bioasq_id, xml_err)
         except Exception as exc:
             self.logger.warning("EFetch metadata for BioASQ %s failed: %s — continuing without metadata",
                                 profile.bioasq_id, exc)

@@ -353,8 +353,12 @@ class LLMClient:
     # Gemini REMOVED — 42% of cost, only 14% of triples
 
     def _extract_deepseek(self, prompt: str) -> list[dict]:
-        # Round-robin across multiple DeepSeek keys for higher throughput
-        clients = getattr(self, '_deepseek_clients', [self._clients["deepseek-v3"]])
+        # Round-robin across multiple DeepSeek keys for higher throughput.
+        # Cannot use getattr(self, '_deepseek_clients', [self._clients["deepseek-v3"]])
+        # because Python evaluates the default EAGERLY — self._clients["deepseek-v3"]
+        # raises KeyError since the key was stored as "deepseek-v4" (see __init__).
+        clients = getattr(self, '_deepseek_clients', None) or \
+                  [self._clients.get("deepseek-v4") or self._clients.get("deepseek-v3")]
         idx = getattr(self, '_deepseek_counter', 0) % len(clients)
         self._deepseek_counter = idx + 1
         client = clients[idx]
