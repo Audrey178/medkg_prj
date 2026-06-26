@@ -353,6 +353,7 @@ async def _run_deepseek_realtime(
 
     Returns {disease_id: {doc_idx: list[RawTriple]}}.
     """
+    
     deepseek_model = "deepseek-v4" if "deepseek-v4" in llm_client.available_models else None
     if not deepseek_model:
         logger.warning("DeepSeek not available — skipping real-time second model")
@@ -537,6 +538,7 @@ async def _run_batch_mode(
     # ── Phase 3: Run DeepSeek real-time ──────────────────────────────────────
     logger.info("=== Phase 3: Running DeepSeek real-time ===")
     deepseek_results = await _run_deepseek_realtime(llm_client, extractor, prepared)
+    
 
     # ── Phase 4: Poll + retrieve OpenAI batch ────────────────────────────────
     if batch_ids:
@@ -569,12 +571,18 @@ async def _run_batch_mode(
 
         for doc_idx, (prompt, doc) in enumerate(item["prompts"]):
             did_safe = disease_id.replace(":", "_")
-            custom_id_base = f"bioasq_{batch_ts}__{did_safe}__doc{doc_idx}"
+            doc_id = f"{did_safe}__doc{doc_idx}"
+            # custom_id MUST be rebuilt with the SAME disease_id used at submit
+            # time (Phase 2 passes the batch-wide `bioasq_{batch_ts}`), otherwise
+            # the clean_d prefix differs and the OpenAI result key never matches.
+            custom_id = BatchLLMClient._make_custom_id(
+                f"bioasq_{batch_ts}", doc_id, "gpt4omini"
+            )
 
             per_model: dict[str, list] = {}
 
             # OpenAI result
-            openai_key = f"{custom_id_base}__gpt4omini"
+            openai_key = f"{custom_id}"
             if openai_key in batch_results:
                 raw = batch_results[openai_key].get("triples", [])
                 parsed = [extractor._parse_triple(t, doc, "gpt-4o-mini") for t in raw]

@@ -24,7 +24,9 @@ Usage:
 from __future__ import annotations
 
 import json
+import uuid
 import logging
+import hashlib
 import os
 import re
 import tempfile
@@ -353,16 +355,12 @@ class BatchLLMClient:
         """Build a custom_id guaranteed ≤64 chars total.
         Format: {disease}_{doc}_{suffix}  (suffix e.g. 'gpt4omini', 'claudehaiku')
         """
-        clean_d = re.sub(r'[^a-zA-Z0-9_-]', '_', disease_id)
-        clean_doc = re.sub(r'[^a-zA-Z0-9_-]', '_', doc_id)
-        # Reserve space: 2 separators ('__') x2 + suffix
-        overhead = 4 + len(suffix)  # "__" + "__" + suffix
-        budget = 64 - overhead
-        # Split budget 50/50 between disease and doc
-        half = budget // 2
-        clean_d = clean_d[:half]
-        clean_doc = clean_doc[:budget - half]
-        return f"{clean_d}__{clean_doc}__{suffix}"
+        clean_d = re.sub(r'[^a-zA-Z0-9_-]', '_', disease_id)[:20]
+        doc_hash = hashlib.md5(doc_id.encode()).hexdigest()[:12]
+
+        return (
+            f"{clean_d}__{doc_hash}__{suffix}"
+        )
 
     def _submit_openai_chunk(self, prompts: list[str], disease_id: str, doc_ids: list[str]) -> str | None:
         """Submit a single chunk to OpenAI Batch API."""

@@ -119,9 +119,6 @@ class GraphRAGRetriever:
             choices = input.get("options", {}).get("choices", {})
             model_name = input.get("cfg", {}).get("model", "gpt-4.1-nano")
             
-            
-        
-        
         if self._llm is not None:
             try:
                 return self._llm_extract_mentions(question)
