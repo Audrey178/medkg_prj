@@ -90,17 +90,55 @@ class QAPipeline:
         final_state["latency_ms"] = round((time.monotonic() - t0) * 1000, 1)
         
 
+        matched_nodes = final_state.get("matched_nodes") or []
         return {
             "answer": final_state["answer"],
             "question_type": final_state["question_type"],
             "sources": final_state["sources"],
             "kg_coverage": final_state["kg_coverage"],
-            "matched_entities": [n["name"] for n in final_state["matched_nodes"]],
+            "matched_entities": [n["name"] for n in matched_nodes],
             "lang_detected": final_state["lang_detected"],
             "lang_localized": final_state["lang_localized"],
             "latency_ms": final_state["latency_ms"],
             "tokens_used": final_state["tokens_used"],
             "error": final_state["error"],
+            # Step-level data for per-question debugging / step logging
+            "_debug": {
+                "step_translate": {
+                    "query_en": final_state.get("query_en", ""),
+                    "lang_detected": final_state.get("lang_detected", ""),
+                },
+                "step_intent": {
+                    "question_type": final_state.get("question_type", ""),
+                    "relation_intents": final_state.get("relation_intents") or [],
+                },
+                "step_retrieval": {
+                    "extracted_entities": final_state.get("extracted_entities") or [],
+                    "matched_nodes": [
+                        {
+                            "name": n.get("name", ""),
+                            "cui": n.get("cui", ""),
+                            "confidence": n.get("confidence", 0.0),
+                            "strategy": n.get("strategy", ""),
+                        }
+                        for n in matched_nodes
+                    ],
+                    "n_triples": len(final_state.get("raw_triples") or []),
+                    "sources": final_state.get("sources") or [],
+                    "kg_coverage": final_state.get("kg_coverage", False),
+                    "raw_triples_preview": [
+                        {k: t.get(k) for k in ("relation", "source_name", "target_name", "pmid", "credibility_score")}
+                        for t in (final_state.get("raw_triples") or [])[:5]
+                    ],
+                },
+                "step_answer": {
+                    "answer": (final_state.get("answer") or {}).get("answer"),
+                    "explanation": (final_state.get("answer") or {}).get("explanation", ""),
+                    "reasoning_answer": (final_state.get("answer") or {}).get("reasoning_answer"),
+                    "tokens_used": final_state.get("tokens_used", 0),
+                    "latency_ms": final_state.get("latency_ms", 0.0),
+                },
+            },
         }
         
         

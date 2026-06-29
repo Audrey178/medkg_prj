@@ -69,6 +69,7 @@ logger = logging.getLogger("bioasq_eval")
 
 RESULTS_DIR = PROJECT_ROOT / "data" / "benchmark" / "bioasq_results"
 RANDOM_SEED = 42
+_KG_RAG_STEP_LOG_SUFFIX = "_steplog.jsonl"
 
 _TYPE_MAP = {"yesno": "yes_no", "factoid": "factoid", "list": "list", "summary": "summary"}
 
@@ -215,6 +216,11 @@ def run_eval(args: argparse.Namespace) -> None:
     kg_hits = 0
     details: list[dict] = []
 
+    # Step-log file for kg_rag mode (one JSONL line per question)
+    _steplog_path = RESULTS_DIR / f"bioasq_eval_{len(questions)}q_{args.mode}{_KG_RAG_STEP_LOG_SUFFIX}"
+    _steplog_file = open(_steplog_path, "w", encoding="utf-8") if "kg_rag" in modes else None
+    logger.info("Step log → %s", _steplog_path if _steplog_file else "(disabled)")
+
     for i, q in enumerate(questions):
         q_details: dict = {
             "idx": i + 1,
@@ -248,6 +254,7 @@ def run_eval(args: argparse.Namespace) -> None:
                 explanation = f"error: {exc}"
                 kg_coverage = False
                 answer = {}
+                raw = {}
 
             qtype = q["type"]
             exact = q["exact_answer"]
@@ -290,7 +297,48 @@ def run_eval(args: argparse.Namespace) -> None:
                 "score": round(sc, 4),
             }
 
-            if args.verbose:
+            # --- Step log (kg_rag only) ---
+            if mode == "kg_rag" and _steplog_file is not None:
+                _dbg = raw.get("_debug") or {}
+                _step_entry = {
+                    "idx": i + 1,
+                    "id": q["id"],
+                    "type": qtype,
+                    "question": q["body"],
+                    "score": round(sc, 4),
+                    "ground_truth": str(gold_display)[:300],
+                    "step_translate": _dbg.get("step_translate", {}),
+                    "step_intent": _dbg.get("step_intent", {}),
+                    "step_retrieval": _dbg.get("step_retrieval", {}),
+                    "step_answer": _dbg.get("step_answer", {}),
+                }
+                _steplog_file.write(json.dumps(_step_entry, ensure_ascii=False) + "\n")
+                _steplog_file.flush()
+
+                # Always log each kg_rag step to console (not just --verbose)
+                _dbg_ret = _dbg.get("step_retrieval", {})
+                _dbg_ans = _dbg.get("step_answer", {})
+                logger.info(
+                    "[Q%03d][kg_rag] type=%-8s score=%.3f  kg_cov=%s\n"
+                    "  [translate ] query_en=%r  lang=%s\n"
+                    "  [intent   ] qtype=%-10s  intents=%s\n"
+                    "  [retrieval] entities=%s  triples=%d  sources=%s\n"
+                    "  [answer   ] ans=%r\n"
+                    "  [reasoning] %r\n"
+                    "  [explain  ] %r",
+                    i + 1, qtype, sc, kg_coverage,
+                    _dbg.get("step_translate", {}).get("query_en", "")[:80],
+                    _dbg.get("step_translate", {}).get("lang_detected", ""),
+                    _dbg.get("step_intent", {}).get("question_type", ""),
+                    _dbg.get("step_intent", {}).get("relation_intents", []),
+                    [n.get("name") for n in _dbg_ret.get("matched_nodes", [])],
+                    _dbg_ret.get("n_triples", 0),
+                    _dbg_ret.get("sources", [])[:3],
+                    str(_dbg_ans.get("answer", ""))[:120],
+                    str(_dbg_ans.get("reasoning_answer") or "")[:200],
+                    str(_dbg_ans.get("explanation") or "")[:200],
+                )
+            elif args.verbose:
                 logger.info(
                     "[Q%03d] type=%-8s mode=%-8s score=%.3f\n"
                     "         Q  : %s\n"
@@ -306,6 +354,10 @@ def run_eval(args: argparse.Namespace) -> None:
 
         if (i + 1) % 10 == 0:
             logger.info("Progress: %d/%d", i + 1, len(questions))
+
+    if _steplog_file is not None:
+        _steplog_file.close()
+        logger.info("Step log written to %s", _steplog_path)
 
     # ---- Report ----
     print("\n" + "=" * 70)
