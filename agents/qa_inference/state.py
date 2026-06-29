@@ -33,10 +33,6 @@ class QAState(TypedDict):
     raw_triples: list[dict]
     sources: list[str]        # PMIDs
 
-    # --- context_node ---
-    context_sentences: list[str]
-    context_filtered: bool    # True if trimmed > threshold
-
     # --- answer_node ---
     answer: Optional[dict]
     kg_coverage: bool

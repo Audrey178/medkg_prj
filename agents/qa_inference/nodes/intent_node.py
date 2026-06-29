@@ -68,9 +68,13 @@ def intent_node(state: QAState) -> QAState:
         state["relation_intents"] = []
 
     else:  # bioasq or unknown
-        qtype, intents, tokens = _classify_bioasq(query_en, cfg)
-        state["question_type"] = qtype
-        state["relation_intents"] = intents
-        state["tokens_used"] = state.get("tokens_used", 0) + tokens
+        # If caller already provided question_type (e.g. from gold data), skip LLM
+        if state.get("question_type") in ("yes_no", "factoid", "list", "summary"):
+            pass
+        else:
+            qtype, intents, tokens = _classify_bioasq(query_en, cfg)
+            state["question_type"] = qtype
+            state["relation_intents"] = intents
+            state["tokens_used"] = state.get("tokens_used", 0) + tokens
 
     return state

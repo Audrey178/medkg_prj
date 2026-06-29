@@ -199,7 +199,23 @@ OUTPUT:
 - If a required key cannot be populated from context or knowledge, set its value to null \
 (not an empty string).
 - The "explanation" field must reference at least one context triple, \
-or state "no KG context" when falling back to general knowledge."""
+or state "no KG context" when falling back to general knowledge.
+- The "reasoning_answer" field must trace the multi-hop path used to derive the answer, \
+in the format: "[Entity A] -[RELATION]-> [Entity B] -[RELATION]-> [Entity C] → conclusion". \
+For single-hop evidence write "single-hop: [A] -[REL]-> [B] → conclusion". \
+Set to null only when no KG context is available."""
+
+
+MULTIHOP_REASONING_RULES = """\
+MULTIHOP REASONING:
+- Treat each KG triple as a directed edge: subject -[RELATION]-> object.
+- Identify seed entities from the question, then chain edges through the subgraph to reach \
+the answer entity or relationship.
+- Prefer paths with ≥ 2 consecutive edges sharing an intermediate node (true multi-hop).
+- Walk the "Subgraph adjacency" section below to trace paths explicitly before concluding.
+- Report the full hop chain in "reasoning_answer": \
+"[A] -[RELATION]-> [B] -[RELATION]-> [C] → conclusion". \
+State each intermediate node explicitly — do not skip hops."""
 
 
 def build_constraint_block(
@@ -209,6 +225,7 @@ def build_constraint_block(
     content_rules: bool = True,
     citation_rules: bool = True,
     output_rules: bool = True,
+    multihop_reasoning: bool = True,
 ) -> str:
     """Compose selected rule sections into a single block for injection into answer prompts."""
     parts = []
@@ -222,6 +239,8 @@ def build_constraint_block(
         parts.append(CITATION_RULES)
     if output_rules:
         parts.append(OUTPUT_RULES)
+    if multihop_reasoning:
+        parts.append(MULTIHOP_REASONING_RULES)
     return "\n\n".join(parts)
 
 
@@ -253,7 +272,8 @@ ANSWER_TEMPLATES: dict[str, dict] = {
             "{context_block}"
             "Question: {question}\n\n"
             'Return JSON: {{"answer": "yes" or "no", '
-            '"explanation": "evidence-based explanation citing the context"}}'
+            '"explanation": "evidence-based explanation citing the context", '
+            '"reasoning_answer": "multi-hop chain: [A] -[REL]-> [B] -[REL]-> [C] → conclusion, or null if no KG context"}}'
         ),
     },
 
@@ -264,7 +284,10 @@ ANSWER_TEMPLATES: dict[str, dict] = {
             "{context_block}"
             "Question: {question}\n\n"
             'Return JSON: {{"answer": "precise factual answer (entity name, value, or short phrase)", '
-            '"explanation": "brief supporting evidence from context"}}'
+            '"explanation": "brief supporting evidence from context", '
+            '"reasoning_answer": "multi-hop chain: [A] -[REL]-> [B] -[REL]-> [C] → conclusion, or null if no KG context"}}.\n'
+            "IMPORTANT: Always provide a non-null string for \"answer\". "
+            "If the context is irrelevant, use your biomedical knowledge to give the best answer."
         ),
     },
 
@@ -275,8 +298,11 @@ ANSWER_TEMPLATES: dict[str, dict] = {
             "{context_block}"
             "Question: {question}\n\n"
             'Return JSON: {{"answer": ["item 1", "item 2", ...], '
-            '"explanation": "brief explanation of the list based on context"}}.\n'
-            "Rules: be comprehensive but non-redundant; each item is a distinct entity or concept."
+            '"explanation": "brief explanation of the list based on context", '
+            '"reasoning_answer": "multi-hop chain(s) used to enumerate items, or null if no KG context"}}.\n'
+            "Rules: be comprehensive but non-redundant; each item is a distinct entity or concept. "
+            "IMPORTANT: Always provide a non-empty list for \"answer\". "
+            "If the context is irrelevant, use your biomedical knowledge."
         ),
     },
 
@@ -287,7 +313,10 @@ ANSWER_TEMPLATES: dict[str, dict] = {
             "{context_block}"
             "Question: {question}\n\n"
             'Return JSON: {{"answer": "coherent summary paragraph", '
-            '"key_points": ["point 1", "point 2", "point 3"]}}'
+            '"key_points": ["point 1", "point 2", "point 3"], '
+            '"reasoning_answer": "multi-hop chains supporting the summary, or null if no KG context"}}.\n'
+            "IMPORTANT: Always provide a non-null string for \"answer\". "
+            "If the context is irrelevant, use your biomedical knowledge to summarize."
         ),
     },
 
@@ -306,7 +335,9 @@ ANSWER_TEMPLATES: dict[str, dict] = {
             "Options:\n{options}\n\n"
             'Return JSON: {{"answer": "<single letter A/B/C/D/E>", '
             '"explanation": "For the most likely option: cite supporting context if available, '
-            'or give step-by-step clinical reasoning. State why other options are less likely."}}'
+            'or give step-by-step clinical reasoning. State why other options are less likely.", '
+            '"reasoning_answer": "multi-hop path connecting clinical clues to the chosen option: '
+            '[clue entity] -[REL]-> [intermediate] -[REL]-> [diagnosis], or null if no KG context"}}'
         ),
     },
 
@@ -321,19 +352,59 @@ ANSWER_TEMPLATES: dict[str, dict] = {
             "{context_block}"
             "Research question: {question}\n\n"
             'Return JSON: {{"answer": "yes" or "no" or "maybe", '
-            '"explanation": "evidence summary supporting the answer"}}.\n'
+            '"explanation": "evidence summary supporting the answer", '
+            '"reasoning_answer": "multi-hop chain: [A] -[REL]-> [B] -[REL]-> [C] → conclusion, or null if no KG context"}}.\n'
             'Use "maybe" when evidence is conflicting or insufficient.'
         ),
     },
 }
 
 
-def build_context_block(sentences: list[str]) -> str:
-    """Format context sentences into the block injected into answer prompts."""
-    if not sentences:
+def _build_subgraph_adjacency(raw_triples: list[dict]) -> str:
+    """Render KG triples as an adjacency list so the LLM can trace multi-hop paths."""
+    from collections import defaultdict
+
+    entity_edges: dict[str, list[str]] = defaultdict(list)
+    for t in raw_triples:
+        if t.get("is_retracted"):
+            continue
+        source = t.get("source_name") or t.get("anchor_name") or ""
+        target = t.get("target_name", "")
+        rel = t.get("relation", "OTHER")
+        cred = t.get("credibility_score", 0.5)
+        pmid = t.get("pmid", "")
+        if not source or not target:
+            continue
+        edge = f"  --[{rel}]--> {target} (credibility: {cred:.2f})"
+        if pmid:
+            edge += f" [PMID: {pmid}]"
+        entity_edges[source].append(edge)
+
+    if not entity_edges:
+        return ""
+
+    lines = ["\nSubgraph adjacency (trace multi-hop paths here):"]
+    for entity in sorted(entity_edges):
+        lines.append(f"[{entity}]")
+        lines.extend(entity_edges[entity])
+    return "\n".join(lines) + "\n\n"
+
+
+def build_context_block(sentences: list[str] = (), raw_triples: list[dict] | None = None) -> str:
+    """Build the context block injected into answer prompts.
+
+    Renders a subgraph adjacency view from raw_triples so the LLM can trace
+    multi-hop paths. NL sentences are included when provided (e.g. legacy callers).
+    """
+    if not sentences and not raw_triples:
         return _NO_CTX_HEADER
-    body = "\n".join(f"- {s}" for s in sentences)
-    return _CTX_HEADER.format(context=body)
+    parts = []
+    if sentences:
+        body = "\n".join(f"- {s}" for s in sentences)
+        parts.append(_CTX_HEADER.format(context=body))
+    if raw_triples:
+        parts.append(_build_subgraph_adjacency(raw_triples))
+    return "".join(parts)
 
 
 def format_mcq_options(options: dict) -> str:

@@ -17,8 +17,6 @@ from typing import Optional
 from core.models import PrimeKGNodeType, TemporalEdge
 from core.retrieval_index import AdjacencyIndex, PMIDEdgeIndex
 
-from ..agents.qa_inference.nodes.entity_node import _extract_entities_mcq_llm
-
 logger = logging.getLogger(__name__)
 
 
@@ -54,7 +52,6 @@ class GraphRAGRetriever:
         self._normalizer = entity_normalizer
         self._primekg = primekg_index
         self._llm = llm_client
-        self._extract_entities_mcq_llm = _extract_entities_mcq_llm
 
     # ------------------------------------------------------------------
     # Public API
@@ -88,7 +85,7 @@ class GraphRAGRetriever:
                 insufficient_evidence=True,
             )
 
-        ranked = sorted(edges, key=self._score, reverse=True)[:top_n]
+        ranked = sorted(edges, key=self._score, reverse=True)
         pmids = list({
             pmid
             for e in ranked
@@ -108,17 +105,11 @@ class GraphRAGRetriever:
     # Internals
     # ------------------------------------------------------------------
 
-    def _extract_entity_mentions(self, input: dict, benchmark_mode: str) -> list[str]:
+    def _extract_entity_mentions(self, question: str) -> list[str]:
         """Extract candidate entity mentions from question text.
 
-        Uses LLM if available; falls back to simple noun-chunk heuristic.
+        Uses LLM if available; falls back to capitalised-run heuristic.
         """
-        
-        if benchmark_mode == "medqa":
-            question = input.get("query_en") or input.get("query_raw")
-            choices = input.get("options", {}).get("choices", {})
-            model_name = input.get("cfg", {}).get("model", "gpt-4.1-nano")
-            
         if self._llm is not None:
             try:
                 return self._llm_extract_mentions(question)
@@ -165,15 +156,18 @@ class GraphRAGRetriever:
                             continue
                 except Exception:
                     pass
-            # PrimeKGIndex fuzzy fallback
+            # PrimeKGIndex fuzzy fallback — returns list[PrimeKGNode]
             if self._primekg is not None:
                 try:
-                    resolved = self._primekg.fuzzy_resolve_name(m)
-                    if resolved:
-                        r_lower = resolved.lower()
+                    matched = False
+                    for node in self._primekg.fuzzy_resolve_name(m):
+                        r_lower = node.name_lower
                         if r_lower in self._adj.entity_to_edge_ids:
                             canonical.add(r_lower)
-                            continue
+                            matched = True
+                            break
+                    if matched:
+                        continue
                 except Exception:
                     pass
             # Last-resort: partial-string match against index keys

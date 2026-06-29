@@ -323,7 +323,7 @@ class EmbeddingLinker:
         self._index_names = names
         self._index_ids = ids
         logger.info("Building embedding index for %d entities...", len(names))
-        self._index_embeddings = self._model.encode(names, show_progress_bar=False, batch_size=256)
+        self._index_embeddings = self._model.encode(names, show_progress_bar=True, batch_size=256, device='cpu')
         logger.info("Embedding index built: shape=%s", self._index_embeddings.shape)
 
     def link(self, text: str, top_k: int = 5) -> list[tuple[str, str, float]]:
@@ -334,7 +334,7 @@ class EmbeddingLinker:
         if not self._ensure_loaded() or self._index_embeddings is None:
             return []
 
-        query_emb = self._model.encode([text], normalize_embeddings=True)
+        query_emb = self._model.encode([text], normalize_embeddings=True, device='cpu')
         # Cosine similarity (embeddings are L2-normalized)
         index_norm = self._index_embeddings / (
             np.linalg.norm(self._index_embeddings, axis=1, keepdims=True) + 1e-8

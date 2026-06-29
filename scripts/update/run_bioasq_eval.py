@@ -213,22 +213,40 @@ def run_eval(args: argparse.Namespace) -> None:
         m: defaultdict(list) for m in modes
     }
     kg_hits = 0
+    details: list[dict] = []
 
     for i, q in enumerate(questions):
+        q_details: dict = {
+            "idx": i + 1,
+            "id": q["id"],
+            "type": q["type"],
+            "question": q["body"],
+            "ground_truth": {
+                "exact": q["exact_answer"],
+                "ideal": q["ideal_answer"],
+            },
+            "modes": {},
+        }
+
         for mode in modes:
             try:
                 raw = pipeline.run(
                     q["body"],
                     benchmark_type="bioasq",
                     mode=mode,
+                    question_type=q["pipeline_type"],
                 )
                 answer = raw.get("answer") or {}
-                predicted_raw = answer.get("answer", "")
-                if mode == "kg_rag" and raw.get("kg_coverage"):
+                predicted_raw = answer.get("answer") or ""
+                explanation = answer.get("explanation", "")
+                kg_coverage = raw.get("kg_coverage", False)
+                if mode == "kg_rag" and kg_coverage:
                     kg_hits += 1
             except Exception as exc:
                 logger.warning("[Q%d] error: %s", i, exc)
                 predicted_raw = ""
+                explanation = f"error: {exc}"
+                kg_coverage = False
                 answer = {}
 
             qtype = q["type"]
@@ -237,29 +255,54 @@ def run_eval(args: argparse.Namespace) -> None:
 
             if qtype == "yesno":
                 sc = float(score_yesno(str(predicted_raw), str(exact)))
+                gold_display = str(exact)
 
             elif qtype == "factoid":
                 gold_syns = exact if isinstance(exact, list) else [[str(exact)]]
                 sc = float(score_factoid(str(predicted_raw), gold_syns))
+                gold_display = exact
 
             elif qtype == "list":
                 pred_list = predicted_raw if isinstance(predicted_raw, list) else [str(predicted_raw)]
                 gold_syns = exact if isinstance(exact, list) else [[str(exact)]]
                 sc = score_list(pred_list, gold_syns)
+                gold_display = exact
 
             elif qtype == "summary":
                 gold_text = ideal[0] if isinstance(ideal, list) and ideal else str(ideal)
-                key_points = answer.get("key_points", [])
-                pred_text = str(predicted_raw) + " " + " ".join(key_points)
+                key_points = answer.get("key_points") or []
+                if not isinstance(key_points, list):
+                    key_points = [str(key_points)]
+                pred_text = str(predicted_raw) + " " + " ".join(str(k) for k in key_points)
                 sc = rouge2_f1(pred_text, gold_text)
+                gold_display = gold_text
 
             else:
                 sc = 0.0
+                gold_display = str(exact or ideal)
 
             scores[mode][qtype].append(sc)
 
+            q_details["modes"][mode] = {
+                "predicted": predicted_raw,
+                "explanation": explanation,
+                "kg_coverage": kg_coverage,
+                "score": round(sc, 4),
+            }
+
             if args.verbose:
-                logger.info("[Q%03d] type=%s mode=%s score=%.3f", i + 1, qtype, mode, sc)
+                logger.info(
+                    "[Q%03d] type=%-8s mode=%-8s score=%.3f\n"
+                    "         Q  : %s\n"
+                    "         ANS: %r\n"
+                    "         GT : %r",
+                    i + 1, qtype, mode, sc,
+                    q["body"],
+                    str(predicted_raw)[:200],
+                    str(gold_display)[:200],
+                )
+
+        details.append(q_details)
 
         if (i + 1) % 10 == 0:
             logger.info("Progress: %d/%d", i + 1, len(questions))
@@ -305,9 +348,18 @@ def run_eval(args: argparse.Namespace) -> None:
 
     out_path = RESULTS_DIR / f"bioasq_eval_{len(questions)}q_{args.mode}.json"
     with open(out_path, "w") as f:
-        json.dump({"n_questions": len(questions), "mode": args.mode,
-                   "kg_hit_rate": kg_hits / len(questions) if "kg_rag" in modes else None,
-                   "results": output_results}, f, indent=2)
+        json.dump(
+            {
+                "n_questions": len(questions),
+                "mode": args.mode,
+                "kg_hit_rate": kg_hits / len(questions) if "kg_rag" in modes else None,
+                "results": output_results,
+                "details": details,
+            },
+            f,
+            indent=2,
+            ensure_ascii=False,
+        )
     logger.info("Results saved to %s", out_path)
 
 

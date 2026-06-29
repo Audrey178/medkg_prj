@@ -58,26 +58,26 @@ def _call_llm(system: str, user: str, cfg: dict) -> tuple[dict, int]:
 def answer_node(state: QAState) -> QAState:
     mode = state.get("mode", "kg_rag")
     question_type = state.get("question_type", "factoid")
-    context_sentences = state.get("context_sentences", [])
+    raw_triples = state.get("raw_triples", [])
     cfg = get_config()["llm"]
 
     # kg_only + no context → null answer
-    if mode == "kg_only" and not context_sentences:
+    if mode == "kg_only" and not raw_triples:
         state["answer"] = None
         state["error"] = "no_kg_match"
         return state
 
-    # kg_only + has context → return serialized context without LLM
+    # kg_only + has context → return raw triples without LLM
     if mode == "kg_only":
         state["answer"] = {
-            "answer": context_sentences,
+            "answer": raw_triples,
             "explanation": "Raw knowledge graph context (kg_only mode — no LLM).",
         }
         return state
 
     # llm_only or kg_rag → call LLM
     template = ANSWER_TEMPLATES.get(question_type, ANSWER_TEMPLATES["factoid"])
-    context_block = build_context_block(context_sentences)
+    context_block = build_context_block(raw_triples=raw_triples if mode != "llm_only" else None)
 
     # Build options string for MEDQA
     options_str = ""
@@ -99,5 +99,7 @@ def answer_node(state: QAState) -> QAState:
     # Ensure required keys are present for downstream consumers
     if "answer" not in answer_dict:
         state["answer"]["answer"] = None
+    if "reasoning_answer" not in answer_dict:
+        state["answer"]["reasoning_answer"] = None
 
     return state
