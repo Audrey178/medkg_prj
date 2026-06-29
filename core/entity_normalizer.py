@@ -278,20 +278,30 @@ class EmbeddingLinker:
     """
     Stage 2: Dense embedding-based entity linking.
     Uses BioLORD-2023 (preferred) or SapBERT as fallback.
+    Persists the embedding index to FAISS on disk so it is reused across runs
+    without re-encoding ~130K PrimeKG names each time.
     """
 
-    def __init__(self, model_name: str = "FremyCompany/BioLORD-2023-C"):
+    _INDEX_DIR = PROJECT_ROOT / "data" / "primekg"
+    _FAISS_FILE = "embedding_index.faiss"
+    _NPY_FILE = "embedding_index.npy"    # fallback when faiss not installed
+    _META_FILE = "embedding_index_meta.json"
+
+    def __init__(self, model_name: str = "FremyCompany/BioLORD-2023-C",
+                 index_dir: Path | None = None):
         self._model = None
         self._model_name = model_name
-        self._index_embeddings: np.ndarray | None = None
+        self._index_dir = Path(index_dir) if index_dir else self._INDEX_DIR
+        self._faiss_index = None          # faiss.IndexFlatIP when available
+        self._index_embeddings: np.ndarray | None = None  # numpy fallback
         self._index_names: list[str] = []
         self._index_ids: list[str] = []
+        self._use_faiss = False
 
-    def _ensure_loaded(self) -> bool:
-        """Lazy load model and build index."""
+    def _ensure_model(self) -> bool:
+        """Lazy-load the sentence-transformer model (needed for query encoding)."""
         if self._model is not None:
             return True
-
         try:
             from sentence_transformers import SentenceTransformer
             logger.info("Loading embedding model: %s ...", self._model_name)
@@ -302,7 +312,6 @@ class EmbeddingLinker:
             logger.warning("sentence-transformers not installed")
             return False
         except Exception as e:
-            # Fallback to SapBERT
             try:
                 from sentence_transformers import SentenceTransformer
                 fallback = "cambridgeltl/SapBERT-from-PubMedBERT-fulltext"
@@ -315,40 +324,146 @@ class EmbeddingLinker:
                 logger.warning("No embedding model available: %s", e2)
                 return False
 
+    # Backward-compat alias used by callers outside this class
+    def _ensure_loaded(self) -> bool:
+        return self._ensure_model()
+
+    def load_index(self) -> bool:
+        """
+        Load a persisted FAISS (or numpy fallback) index from disk.
+        Does NOT require the sentence-transformer model to be loaded.
+        Returns True if an index was loaded successfully.
+        """
+        meta_path = self._index_dir / self._META_FILE
+        if not meta_path.exists():
+            return False
+
+        try:
+            with open(meta_path) as f:
+                meta = json.load(f)
+            self._index_names = meta["names"]
+            self._index_ids = meta["ids"]
+            stored_model = meta.get("model_name", "")
+            if stored_model and stored_model != self._model_name:
+                logger.warning(
+                    "Cached index built with '%s', current model is '%s' — "
+                    "delete %s to rebuild", stored_model, self._model_name,
+                    self._index_dir / self._META_FILE,
+                )
+        except Exception as e:
+            logger.warning("Cannot read embedding index metadata: %s", e)
+            return False
+
+        # Prefer FAISS
+        faiss_path = self._index_dir / self._FAISS_FILE
+        if faiss_path.exists():
+            try:
+                import faiss
+                self._faiss_index = faiss.read_index(str(faiss_path))
+                self._use_faiss = True
+                logger.info("FAISS index loaded from disk: %d entities", len(self._index_names))
+                return True
+            except Exception as e:
+                logger.warning("Cannot load FAISS index (%s), trying numpy fallback", e)
+
+        # Numpy fallback
+        npy_path = self._index_dir / self._NPY_FILE
+        if npy_path.exists():
+            try:
+                self._index_embeddings = np.load(str(npy_path))
+                self._use_faiss = False
+                logger.info("Numpy index loaded from disk: %d entities", len(self._index_names))
+                return True
+            except Exception as e:
+                logger.warning("Cannot load numpy index: %s", e)
+
+        return False
+
     def build_index(self, names: list[str], ids: list[str]) -> None:
-        """Build embedding index from a list of entity names."""
-        if not self._ensure_loaded():
+        """Encode entity names, build FAISS (or numpy) index, and persist to disk."""
+        if not self._ensure_model():
             return
 
         self._index_names = names
         self._index_ids = ids
         logger.info("Building embedding index for %d entities...", len(names))
-        self._index_embeddings = self._model.encode(names, show_progress_bar=True, batch_size=256, device='cpu')
-        logger.info("Embedding index built: shape=%s", self._index_embeddings.shape)
+        embeddings = self._model.encode(
+            names, show_progress_bar=True, batch_size=256, device='cpu'
+        )
+        # L2-normalise once so inner product equals cosine similarity at query time
+        norms = np.linalg.norm(embeddings, axis=1, keepdims=True) + 1e-8
+        embeddings_norm = (embeddings / norms).astype(np.float32)
+
+        self._index_dir.mkdir(parents=True, exist_ok=True)
+        saved_faiss = False
+
+        try:
+            import faiss
+            dim = embeddings_norm.shape[1]
+            index = faiss.IndexFlatIP(dim)
+            index.add(embeddings_norm)
+            self._faiss_index = index
+            self._use_faiss = True
+            faiss.write_index(index, str(self._index_dir / self._FAISS_FILE))
+            logger.info("FAISS index saved → %s", self._index_dir / self._FAISS_FILE)
+            saved_faiss = True
+        except ImportError:
+            logger.info("faiss not installed — saving numpy index as fallback")
+        except Exception as e:
+            logger.warning("Failed to save FAISS index: %s", e)
+
+        if not saved_faiss:
+            self._index_embeddings = embeddings_norm
+            self._use_faiss = False
+            np.save(str(self._index_dir / self._NPY_FILE), embeddings_norm)
+            logger.info("Numpy index saved → %s", self._index_dir / self._NPY_FILE)
+
+        meta = {
+            "model_name": self._model_name,
+            "count": len(names),
+            "names": names,
+            "ids": ids,
+        }
+        with open(self._index_dir / self._META_FILE, "w") as f:
+            json.dump(meta, f)
+        logger.info("Embedding index built and persisted: %d entities", len(names))
 
     def link(self, text: str, top_k: int = 5) -> list[tuple[str, str, float]]:
         """
         Find closest entities by embedding similarity.
         Returns list of (name, id, score) tuples.
         """
-        if not self._ensure_loaded() or self._index_embeddings is None:
+        if not self._ensure_model():
             return []
+        if self._use_faiss and self._faiss_index is not None:
+            return self._link_faiss(text, top_k)
+        if self._index_embeddings is not None:
+            return self._link_numpy(text, top_k)
+        return []
 
-        query_emb = self._model.encode([text], normalize_embeddings=True, device='cpu')
-        # Cosine similarity (embeddings are L2-normalized)
-        index_norm = self._index_embeddings / (
-            np.linalg.norm(self._index_embeddings, axis=1, keepdims=True) + 1e-8
+    def _link_faiss(self, text: str, top_k: int) -> list[tuple[str, str, float]]:
+        query_emb = self._model.encode(
+            [text], normalize_embeddings=True, device='cpu'
+        ).astype(np.float32)
+        scores, indices = self._faiss_index.search(query_emb, top_k)
+        return [
+            (self._index_names[idx], self._index_ids[idx], float(score))
+            for score, idx in zip(scores[0], indices[0])
+            if idx >= 0 and float(score) > 0.3
+        ]
+
+    def _link_numpy(self, text: str, top_k: int) -> list[tuple[str, str, float]]:
+        query_emb = self._model.encode(
+            [text], normalize_embeddings=True, device='cpu'
         )
-        similarities = np.dot(index_norm, query_emb.T).squeeze()
+        # _index_embeddings is already L2-normalised → dot product == cosine
+        similarities = np.dot(self._index_embeddings, query_emb.T).squeeze()
         top_indices = np.argsort(similarities)[-top_k:][::-1]
-
-        results = []
-        for idx in top_indices:
-            score = float(similarities[idx])
-            if score > 0.3:  # minimum threshold
-                results.append((self._index_names[idx], self._index_ids[idx], score))
-
-        return results
+        return [
+            (self._index_names[idx], self._index_ids[idx], float(similarities[idx]))
+            for idx in top_indices
+            if float(similarities[idx]) > 0.3
+        ]
 
 
 class LLMDisambiguator:
@@ -523,12 +638,13 @@ class EntityNormalizer:
         else:
             self.primekg_index.load()
 
-        # Build embedding index from PrimeKG node names
+        # Build embedding index from PrimeKG node names (or load cached from disk)
         if self.embedding_linker and self.primekg_index._loaded:
-            names = list(self.primekg_index._name_to_id.keys())
-            ids = [self.primekg_index._name_to_id[n] for n in names]
-            if names:
-                self.embedding_linker.build_index(names, ids)
+            if not self.embedding_linker.load_index():
+                names = list(self.primekg_index._name_to_id.keys())
+                ids = [self.primekg_index._name_to_id[n] for n in names]
+                if names:
+                    self.embedding_linker.build_index(names, ids)
 
     def normalize(
         self,

@@ -32,6 +32,7 @@ PATH_FILE =  Path("data/extracted/validated_triples.jsonl")
 _graph_rag_retriever = None
 _primekg_index = None
 _entity_normalizer = None
+_llm_client = None
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +92,19 @@ def _get_entity_normalizer(primekg_index=None):
     return _entity_normalizer
 
 
+def _get_llm_client():
+    global _llm_client
+    if _llm_client is not None:
+        return _llm_client
+    try:
+        from agents.knowledge_extractor import LLMClient
+        _llm_client = LLMClient()
+        logger.info("LLMClient loaded for entity extraction")
+    except Exception as exc:
+        logger.warning("LLMClient init failed — entity extraction will use heuristic: %s", exc)
+    return _llm_client
+
+
 def _get_graph_rag_retriever():
     global _graph_rag_retriever
     if _graph_rag_retriever is not None:
@@ -108,17 +122,20 @@ def _get_graph_rag_retriever():
 
         primekg = _get_primekg_index()
         normalizer = _get_entity_normalizer(primekg)
+        llm = _get_llm_client()
 
         _graph_rag_retriever = GraphRAGRetriever(
             edge_index=adj_index,
             pmid_index=pmid_index,
             entity_normalizer=normalizer,
             primekg_index=primekg,
+            llm_client=llm,
         )
         logger.info(
-            "GraphRAGRetriever ready: %d entities, %d edges",
+            "GraphRAGRetriever ready: %d entities, %d edges (llm=%s)",
             len(adj_index.entity_to_edge_ids),
             len(pmid_index.edge_id_to_edge),
+            "yes" if llm else "no",
         )
     except Exception as exc:
         logger.warning("GraphRAGRetriever init failed: %s", exc)
