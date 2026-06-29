@@ -16,15 +16,49 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 
 from ..state import QAState
 from ..utils.config import get_config
+from ..utils.prompts import NER_SYSTEM, NER_USER
 from core.models import TemporalEdge
 
 logger = logging.getLogger(__name__)
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+
+_openai_client_ner = None
+
+
+def _get_openai_client_ner():
+    global _openai_client_ner
+    if _openai_client_ner is None:
+        import openai
+        _openai_client_ner = openai.OpenAI(api_key=os.environ.get("OPENAI_API_KEY", ""))
+    return _openai_client_ner
+
+
+def _extract_entities_ner(query: str, cfg: dict) -> tuple[list[str], int]:
+    """Extract biomedical entity mentions via NER prompt. Returns (entities, tokens_used)."""
+    try:
+        response = _get_openai_client_ner().chat.completions.create(
+            model=cfg["model"],
+            temperature=0.0,
+            max_tokens=128,
+            response_format={"type": "json_object"},
+            messages=[
+                {"role": "system", "content": NER_SYSTEM},
+                {"role": "user", "content": NER_USER.format(query=query)},
+            ],
+        )
+        data = json.loads(response.choices[0].message.content)
+        entities = [str(e) for e in data.get("entities", [])]
+        tokens = response.usage.total_tokens if response.usage else 0
+        return entities, tokens
+    except Exception as exc:
+        logger.warning("NER entity extraction failed: %s", exc)
+        return [], 0
 EXTRACTED_DIR = PROJECT_ROOT / "data" / "extracted"
 PATH_FILE =  Path("data/extracted/validated_triples.jsonl")
 
@@ -181,6 +215,17 @@ def retrieval_node(state: QAState) -> QAState:
         state["sources"] = []
         return state
 
+    query = state.get("query_en") or state["query_raw"]
+    cfg_llm = get_config()["llm"]
+    cfg_ret = get_config()["retrieval"]
+    top_n = cfg_ret.get("max_relationships_per_entity", 20)
+
+    # NER: extract biomedical entities before KG retrieval
+    entities, ner_tokens = _extract_entities_ner(query, cfg_llm)
+    state["extracted_entities"] = entities
+    state["tokens_used"] = state.get("tokens_used", 0) + ner_tokens
+    logger.debug("NER extracted entities: %s", entities)
+
     retriever = _get_graph_rag_retriever()
     if retriever is None:
         logger.warning("GraphRAGRetriever unavailable — returning empty context")
@@ -189,17 +234,17 @@ def retrieval_node(state: QAState) -> QAState:
         state["kg_coverage"] = False
         return state
 
-    query = state.get("query_en") or state["query_raw"]
-    cfg = get_config()["retrieval"]
-    top_n = cfg.get("max_relationships_per_entity", 20)
-
     try:
-        result = retriever.retrieve(query, k_hops=16, top_n=top_n)
+        result = retriever.retrieve(query, k_hops=16, top_n=top_n, pre_extracted_mentions=entities or None)
         state["raw_triples"] = [_edge_to_dict(e) for e in result.subgraph_edges]
         state["sources"] = result.cited_pmids
         state["kg_coverage"] = not result.insufficient_evidence
-        logger.debug(
-            "Retrieved %d triples for query %r (entities: %s)",
+        state["matched_nodes"] = [
+            {"name": e, "cui": "", "confidence": 1.0, "strategy": "ner+kg_match"}
+            for e in result.linked_entities
+        ]
+        logger.info(
+            "Retrieved %d triples for query %r (linked: %s)",
             len(result.subgraph_edges), query[:60], result.linked_entities,
         )
     except Exception as exc:

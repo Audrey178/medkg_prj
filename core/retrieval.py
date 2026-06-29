@@ -57,9 +57,18 @@ class GraphRAGRetriever:
     # Public API
     # ------------------------------------------------------------------
 
-    def retrieve(self, question: str, k_hops: int = 2, top_n: int = 20) -> RetrievalResult:
+    def retrieve(
+        self,
+        question: str,
+        k_hops: int = 2,
+        top_n: int = 20,
+        pre_extracted_mentions: list[str] | None = None,
+    ) -> RetrievalResult:
         """Return a reranked subgraph for a free-text question."""
-        mentions = self._extract_entity_mentions(question)
+        if pre_extracted_mentions is not None:
+            mentions = pre_extracted_mentions
+        else:
+            mentions = self._extract_entity_mentions(question)
         canonical = self._resolve_entities(mentions)
 
         if not canonical:
@@ -116,12 +125,25 @@ class GraphRAGRetriever:
             except Exception as e:
                 logger.warning("LLM entity extraction failed, using heuristic: %s", e)
 
-        # Heuristic fallback: capitalised runs > 2 chars that aren't stop words
+        # Heuristic fallback: n-gram candidates (1–4 tokens, lowercase) + capitalised runs
         import re
-        tokens = re.findall(r'\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', question)
-        stopwords = {"The", "A", "An", "In", "Of", "For", "And", "Or", "Is", "Are",
-                     "Was", "Were", "With", "What", "When", "Which", "Who", "How"}
-        return [t for t in tokens if t not in stopwords and len(t) > 2]
+        stopwords = {
+            "the", "a", "an", "in", "of", "for", "and", "or", "is", "are",
+            "was", "were", "with", "what", "when", "which", "who", "how",
+            "does", "do", "have", "has", "been", "be", "this", "that",
+            "can", "could", "would", "may", "might", "will", "should",
+            "by", "at", "to", "from", "than", "more", "most", "its", "it",
+            "not", "no", "if", "then", "also", "but", "so", "as", "on",
+        }
+        words = re.findall(r'\b\w[\w\-]*\b', question.lower())
+        candidates: list[str] = []
+        # Slide windows of 1–4 words; skip all-stopword n-grams
+        for size in range(4, 0, -1):
+            for start in range(len(words) - size + 1):
+                chunk = words[start:start + size]
+                if any(w not in stopwords and len(w) > 2 for w in chunk):
+                    candidates.append(" ".join(chunk))
+        return candidates
 
     def _llm_extract_mentions(self, question: str) -> list[str]:
         prompt = (
