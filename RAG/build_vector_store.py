@@ -23,9 +23,9 @@ from pathlib import Path
 # Allow imports from project root
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from retrieval.bioasq_snippet_loader import load_bioasq_snippets
-from retrieval.textbook_chunker import TARGET_FILES, chunk_textbook, detect_chunking_strategy
-from retrieval.vector_store import VectorStore
+from RAG.bioasq_snippet_loader import load_bioasq_snippets
+from RAG.textbook_chunker import TARGET_FILES, chunk_textbook, detect_chunking_strategy
+from RAG.vector_store import VectorStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
 logger = logging.getLogger("build_vector_store")

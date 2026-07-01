@@ -331,6 +331,13 @@ class ConditionalContext:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
 
+def _parse_relation(value: str) -> PrimeKGRelationType | str:
+    try:
+        return PrimeKGRelationType(value)
+    except ValueError:
+        return value
+
+
 @dataclass
 class TemporalEdge:
     """
@@ -341,7 +348,7 @@ class TemporalEdge:
     source_id: str           # Ontology ID (MONDO, NCBI Gene, DrugBank, etc.)
     source_type: PrimeKGNodeType
     source_name: str
-    relation: PrimeKGRelationType
+    relation: PrimeKGRelationType | str
     target_id: str
     target_type: PrimeKGNodeType
     target_name: str
@@ -358,9 +365,13 @@ class TemporalEdge:
     quality_grade: Optional[str] = None  # A, B, C from Quality Controller
 
     @property
+    def _relation_str(self) -> str:
+        return self.relation.value if isinstance(self.relation, PrimeKGRelationType) else str(self.relation)
+
+    @property
     def edge_id(self) -> str:
         """Deterministic edge ID for deduplication and supersession tracking."""
-        content = f"{self.source_id}|{self.relation.value}|{self.target_id}"
+        content = f"{self.source_id}|{self._relation_str}|{self.target_id}"
         return hashlib.md5(content.encode()).hexdigest()[:12]
 
     def to_dict(self) -> dict:
@@ -369,7 +380,7 @@ class TemporalEdge:
             "source_id": self.source_id,
             "source_type": self.source_type.value,
             "source_name": self.source_name,
-            "relation": self.relation.value,
+            "relation": self._relation_str,
             "target_id": self.target_id,
             "target_type": self.target_type.value,
             "target_name": self.target_name,
@@ -388,7 +399,7 @@ class TemporalEdge:
             source_id=data["source_id"],
             source_type=PrimeKGNodeType(data["source_type"]),
             source_name=data["source_name"],
-            relation=PrimeKGRelationType(data["relation"]),
+            relation=_parse_relation(data["relation"]),
             target_id=data["target_id"],
             target_type=PrimeKGNodeType(data["target_type"]),
             target_name=data["target_name"],

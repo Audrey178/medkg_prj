@@ -42,3 +42,4 @@ scipy==1.14.1                # statistical tests (Welch's t, McNemar)
 # --- Release tooling ---
 huggingface_hub==0.26.5      # HF dataset upload
 jsonschema==4.23.0           # Croissant validation
+qdrant-client

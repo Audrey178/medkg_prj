@@ -18,7 +18,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Callable
 
-from retrieval.vector_store import RetrievedChunk, VectorStore
+from RAG.vector_store import RetrievedChunk, VectorStore
 
 logger = logging.getLogger(__name__)
 

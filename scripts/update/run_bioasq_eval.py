@@ -32,9 +32,9 @@ Metrics
 
 Usage
 -----
-  python -m scripts.run_bioasq_eval --data data/bioasq/BioASQ-task12b-testset4.json --n 200
-  python -m scripts.run_bioasq_eval --data data/bioasq/BioASQ-task12b-testset4.json --mode llm_only
-  python -m scripts.run_bioasq_eval --data data/bioasq/BioASQ-task12b-testset4.json --type yesno factoid
+  python -m scripts.update.run_bioasq_eval --data data/bioasq/BioASQ-task12b-testset4.json --n 200
+  python -m scripts.update.run_bioasq_eval --data data/bioasq/BioASQ-task12b-testset4.json --mode llm_only
+  python -m scripts.update.run_bioasq_eval --data data/bioasq/BioASQ-task12b-testset4.json --type yesno factoid
 """
 
 from __future__ import annotations

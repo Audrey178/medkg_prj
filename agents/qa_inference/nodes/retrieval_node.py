@@ -186,7 +186,7 @@ def _edge_to_dict(edge: TemporalEdge) -> dict:
     ev = edge.evidence
     return {
         "direction": "outgoing",
-        "relation": edge.relation.value,
+        "relation": edge.relation.value if hasattr(edge.relation, "value") else edge.relation,
         "anchor_name": edge.source_name,
         "source_name": edge.source_name,
         "target_name": edge.target_name,

@@ -264,12 +264,10 @@ class QualityController(BaseAgent):
             relation_str = triple.relation.lower().strip()
             relation = CARRIER_TO_PRIMEKG.get(relation_str)
             if relation is None:
-                # Try direct PrimeKG relation
                 try:
                     relation = PrimeKGRelationType(relation_str)
                 except ValueError:
-                    # Fallback: use carrier_other
-                    relation = PrimeKGRelationType.CARRIER_OTHER
+                    relation = relation_str
 
             # Map entity types
             source_type = self._map_node_type(triple.subject_type)
@@ -430,7 +428,7 @@ class QualityController(BaseAgent):
         # Partition by relation first to keep O(n^2) within-relation only
         rel_groups: dict[str, list[int]] = {}
         for i, edge in enumerate(edges):
-            rel_groups.setdefault(edge.relation.value, []).append(i)
+            rel_groups.setdefault(edge._relation_str, []).append(i)
 
         for group in rel_groups.values():
             if len(group) < 2:
@@ -510,7 +508,7 @@ class QualityController(BaseAgent):
                 conflicts.append({
                     "type": "indication_contraindication_conflict",
                     "entities": key,
-                    "relations": [r.value for r in relations],
+                    "relations": [r.value if hasattr(r, "value") else r for r in relations],
                 })
 
             if (PrimeKGRelationType.DISEASE_PHENOTYPE_POSITIVE in relations and
@@ -518,7 +516,7 @@ class QualityController(BaseAgent):
                 conflicts.append({
                     "type": "phenotype_positive_negative_conflict",
                     "entities": key,
-                    "relations": [r.value for r in relations],
+                    "relations": [r.value if hasattr(r, "value") else r for r in relations],
                 })
 
             if (PrimeKGRelationType.FIRST_LINE_TREATMENT in relations and
@@ -526,7 +524,7 @@ class QualityController(BaseAgent):
                 conflicts.append({
                     "type": "first_line_contraindication_conflict",
                     "entities": key,
-                    "relations": [r.value for r in relations],
+                    "relations": [r.value if hasattr(r, "value") else r for r in relations],
                 })
 
         return conflicts
